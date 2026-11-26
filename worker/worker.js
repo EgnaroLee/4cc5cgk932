@@ -64,7 +64,7 @@ export default{async fetch(req,env){
     if(!ur.ok)return fail('profile');
     const u=P.user(await ur.json().catch(()=>({})));
     if(!u.pid)return fail('profile');
-    const row=await env.DB.prepare('INSERT INTO users(provider,pid,name,created) VALUES(?,?,?,?) ON CONFLICT(provider,pid) DO UPDATE SET name=excluded.name RETURNING id')
+    const row=await env.DB.prepare('INSERT INTO users(provider,pid,name,created) VALUES(?,?,?,?) ON CONFLICT(provider,pid) DO UPDATE SET name=CASE WHEN length(excluded.name)>0 THEN excluded.name ELSE users.name END RETURNING id')
       .bind(r[1],u.pid,String(u.name||'').slice(0,60),now()).first();
     const c=tok(24);
     await env.DB.prepare('INSERT INTO logins(hash,user_id,exp) VALUES(?,?,?)').bind(await sha(c),row.id,now()+60).run();

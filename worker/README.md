@@ -52,19 +52,10 @@ npx wrangler deploy
 > 새 Worker 를 배포하면 대시보드에 평문으로 있던 `OWNER`, `REPO` 는 지워집니다. 시크릿(`ADMIN_PASSWORD`, `GITHUB_TOKEN`)은 남으므로 사용하지 않는다면 대시보드에서 삭제하세요.
 > 이 배포는 기존 사이트(비밀번호 방식)의 관리 기능을 멈추게 합니다. 새 사이트 파일과 같은 시점에 배포하세요.
 
-## 5. 기존 푸꾸옥 플랜북 옮기기
+## 5. 이전 방식의 시크릿 정리
 
-```bash
-node worker/make-seed.mjs > worker/seed.sql
-cd worker && npx wrangler d1 execute planbook --remote --file=seed.sql
-```
-
-이 플랜북은 주인 없이 들어가므로 아직 아무에게도 보이지 않습니다. **사이트에서 먼저 로그인한 뒤**, 아래로 내 계정에 연결합니다.
-
-```bash
-npx wrangler d1 execute planbook --remote --command "SELECT id,provider,name FROM users"
-npx wrangler d1 execute planbook --remote --command "UPDATE plans SET owner_id=<위에서 확인한 내 id> WHERE id='trip26122501'"
-```
+이전(비밀번호 + GitHub 커밋) 방식에서 쓰던 `ADMIN_PASSWORD`, `GITHUB_TOKEN` 시크릿과 `OWNER`, `REPO` 변수는 더 이상 쓰지 않습니다.
+Cloudflare 대시보드에서 삭제하고, GitHub 의 Personal access token 도 폐기하세요.
 
 ## API 요약
 
