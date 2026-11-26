@@ -1,7 +1,7 @@
 // 오프라인 열람용: 네트워크 우선, 실패하면 마지막으로 본 내용을 보여줍니다 (같은 사이트 파일만 저장)
-const C='pb-v4';
+const C='pb-v5';
 const key=r=>{const u=new URL(r.url);return u.origin+u.pathname};
-self.addEventListener('install',e=>{self.skipWaiting();e.waitUntil(caches.open(C).then(c=>c.addAll(['./','index.html','plan.html'])).catch(()=>{}))});
+self.addEventListener('install',e=>{self.skipWaiting();e.waitUntil(caches.open(C).then(c=>c.addAll(['./','index.html','plan.html','terms.html','privacy.html'])).catch(()=>{}))});
 self.addEventListener('activate',e=>e.waitUntil(caches.keys().then(ks=>Promise.all(ks.filter(k=>k!==C).map(k=>caches.delete(k)))).then(()=>clients.claim())));
 self.addEventListener('fetch',e=>{
   if(e.request.method!=='GET'||new URL(e.request.url).origin!==location.origin)return;

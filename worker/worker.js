@@ -1,4 +1,4 @@
-// Cloudflare Worker: 소셜 로그인(Google/Kakao) + 사용자별 플랜북 저장(D1) + 공유(링크/초대/구성원)
+// Cloudflare Worker: 소셜 로그인(Google/Kakao) + 계정 연결 + 사용자별 플랜북 저장(D1) + 공유(링크/초대/구성원)
 // Bindings : DB (D1)
 // Vars     : ALLOW_ORIGIN (사이트 origin, 쉼표로 여러 개 가능. 예: https://egnarolee.github.io)
 // Secrets  : SESSION_SECRET, GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, KAKAO_REST_KEY, (선택) KAKAO_CLIENT_SECRET
@@ -43,7 +43,9 @@ export default{async fetch(req,env){
       const ret=url.searchParams.get('return');
       if(!P.key(env)||!env.SESSION_SECRET)return J({error:'not_configured'},503);
       if(!okReturn(env,ret))return J({error:'return'},400);
-      const n=tok(16),p=b64u(enc.encode(JSON.stringify({n,e:now()+600,r:ret})));
+      const cc=url.searchParams.get('cc')||'';
+      if(!/^[A-Za-z0-9_-]{43}$/.test(cc))return J({error:'cc'},400);
+      const n=tok(16),p=b64u(enc.encode(JSON.stringify({n,e:now()+600,r:ret,c:cc})));
       const state=p+'.'+await hmac(env.SESSION_SECRET,p);
       const q=new URLSearchParams({client_id:P.key(env),redirect_uri:redirect,response_type:'code',scope:P.scope,state});
       return go(P.auth+'?'+q,{'Set-Cookie':`pb_n=${n}; Max-Age=600; Path=/auth; HttpOnly; Secure; SameSite=Lax`});
@@ -53,7 +55,7 @@ export default{async fetch(req,env){
     if(!p||!sig||!same(sig,await hmac(env.SESSION_SECRET||'',p)))return J({error:'state'},400);
     let st;try{st=JSON.parse(dec.decode(unb64u(p)))}catch{return J({error:'state'},400)}
     const ck=(req.headers.get('Cookie')||'').match(/(?:^|;\s*)pb_n=([^;]+)/);
-    if(st.e<now()||!ck||!same(ck[1],st.n)||!okReturn(env,st.r))return J({error:'state'},400);
+    if(st.e<now()||!ck||!same(ck[1],st.n)||!okReturn(env,st.r)||!/^[A-Za-z0-9_-]{43}$/.test(st.c||''))return J({error:'state'},400);
     const clr={'Set-Cookie':'pb_n=; Max-Age=0; Path=/auth; HttpOnly; Secure; SameSite=Lax'};
     const fail=c=>go(st.r+'#error='+c,clr);
     const code=url.searchParams.get('code');
@@ -67,18 +69,27 @@ export default{async fetch(req,env){
     if(!ur.ok)return fail('profile');
     const u=P.user(await ur.json().catch(()=>({})));
     if(!u.pid)return fail('profile');
-    const row=await env.DB.prepare('INSERT INTO users(provider,pid,name,created) VALUES(?,?,?,?) ON CONFLICT(provider,pid) DO UPDATE SET name=CASE WHEN length(excluded.name)>0 THEN excluded.name ELSE users.name END RETURNING id')
-      .bind(r[1],u.pid,String(u.name||'').slice(0,60),now()).first();
+    const nm=String(u.name||'').slice(0,60);
+    let idn=await env.DB.prepare('SELECT id,user_id FROM identities WHERE provider=? AND pid=?').bind(r[1],u.pid).first();
+    if(!idn){
+      const nu=await env.DB.prepare("INSERT INTO users(provider,pid,name,created) VALUES('acct',?,?,?) RETURNING id").bind(lid(16),nm,now()).first();
+      try{await env.DB.prepare('INSERT INTO identities(provider,pid,user_id,name,created) VALUES(?,?,?,?,?)').bind(r[1],u.pid,nu.id,nm,now()).run()}
+      catch{await env.DB.prepare('DELETE FROM users WHERE id=?').bind(nu.id).run()}   // 동시에 처음 로그인한 경우
+      idn=await env.DB.prepare('SELECT id,user_id FROM identities WHERE provider=? AND pid=?').bind(r[1],u.pid).first();
+      if(!idn)return fail('profile');
+    }else if(nm){
+      await env.DB.batch([env.DB.prepare('UPDATE identities SET name=? WHERE id=?').bind(nm,idn.id),env.DB.prepare("UPDATE users SET name=? WHERE id=? AND name=''").bind(nm,idn.user_id)]);
+    }
     const c=tok(24);
-    await env.DB.prepare('INSERT INTO logins(hash,user_id,exp) VALUES(?,?,?)').bind(await sha(c),row.id,now()+60).run();
+    await env.DB.prepare('INSERT INTO logins(hash,user_id,exp,cc) VALUES(?,?,?,?)').bind(await sha(c),idn.user_id,now()+60,st.c).run();
     return go(st.r+'#code='+c,clr);
   }
 
   if(path==='/auth/exchange'&&m==='POST'){
     let b;try{b=await req.json()}catch{return J({error:'bad'},400)}
-    if(typeof b.code!=='string'||b.code.length>100)return J({error:'code'},400);
+    if(typeof b.code!=='string'||b.code.length>100||typeof b.cv!=='string'||!/^[A-Za-z0-9_-]{20,100}$/.test(b.cv))return J({error:'code'},400);
     await env.DB.batch([env.DB.prepare('DELETE FROM logins WHERE exp<?').bind(now()),env.DB.prepare('DELETE FROM sessions WHERE exp<?').bind(now())]);
-    const l=await env.DB.prepare('DELETE FROM logins WHERE hash=? AND exp>=? RETURNING user_id').bind(await sha(b.code),now()).first();
+    const l=await env.DB.prepare('DELETE FROM logins WHERE hash=? AND exp>=? AND cc=? RETURNING user_id').bind(await sha(b.code),now(),await sha(b.cv)).first();
     if(!l)return J({error:'code'},401);
     const t=tok(32);
     await env.DB.prepare('INSERT INTO sessions(hash,user_id,exp) VALUES(?,?,?)').bind(await sha(t),l.user_id,now()+SESSION_DAYS*86400).run();
@@ -121,7 +132,61 @@ export default{async fetch(req,env){
   const isPlanGet=r&&!sub&&m==='GET';
   if(!me&&!isPlanGet)return J({error:'auth'},401);
 
-  if(path==='/api/me'&&m==='GET')return J({user:{id:me.id,name:me.name}});
+  if(path==='/api/me'&&m==='GET'){
+    const ids=(await env.DB.prepare('SELECT id,provider,name FROM identities WHERE user_id=? ORDER BY id').bind(me.id).all()).results;
+    return J({user:{id:me.id,name:me.name},identities:ids});
+  }
+  if(path==='/api/me'&&m==='DELETE'){
+    const b=await body();if(!b||b.confirm!==true)return J({error:'confirm'},400);
+    const own="(SELECT id FROM plans WHERE owner_id=?)",q=(x,...a)=>env.DB.prepare(x).bind(...a);
+    await env.DB.batch([
+      q('DELETE FROM plan_members WHERE plan_id IN '+own,me.id),q('DELETE FROM plan_invites WHERE plan_id IN '+own,me.id),
+      q('DELETE FROM plans WHERE owner_id=?',me.id),q('DELETE FROM plan_members WHERE user_id=?',me.id),
+      q('DELETE FROM sessions WHERE user_id=?',me.id),q('DELETE FROM logins WHERE user_id=?',me.id),
+      q('DELETE FROM identities WHERE user_id=?',me.id),q('DELETE FROM users WHERE id=?',me.id)]);
+    return J({ok:true});
+  }
+  const ri=path.match(/^\/api\/identities\/(\d+)$/);
+  if(ri&&m==='DELETE'){
+    const c=await env.DB.prepare('SELECT COUNT(*) n FROM identities WHERE user_id=?').bind(me.id).first();
+    if(c.n<2)return J({error:'last'},400);                       // 마지막 로그인 수단은 해제할 수 없다
+    const d=await env.DB.prepare('DELETE FROM identities WHERE id=? AND user_id=?').bind(+ri[1],me.id).run();
+    return d.meta.changes?J({ok:true}):J({error:'not_found'},404);
+  }
+  // 계정 연결: 소셜 로그인으로 받은 1회용 코드를 "지금 로그인한 계정"에 붙인다 (코드를 요청한 브라우저 + 로그인 상태 둘 다 필요)
+  if((path==='/api/link/preview'||path==='/api/link')&&m==='POST'){
+    const b=await body();if(!b||typeof b.code!=='string'||typeof b.cv!=='string'||!/^[A-Za-z0-9_-]{20,100}$/.test(b.cv))return J({error:'bad'},400);
+    const hc=await sha(b.code),hv=await sha(b.cv);
+    const l=await env.DB.prepare('SELECT user_id FROM logins WHERE hash=? AND exp>? AND cc=?').bind(hc,now(),hv).first();
+    if(!l)return J({error:'code'},401);
+    const U=l.user_id,T=me.id;
+    const st=U===T?null:{
+      plans:(await env.DB.prepare('SELECT COUNT(*) n FROM plans WHERE owner_id=?').bind(U).first()).n,
+      shared:(await env.DB.prepare('SELECT COUNT(*) n FROM plan_members WHERE user_id=?').bind(U).first()).n,
+      mine:(await env.DB.prepare('SELECT COUNT(*) n FROM plans WHERE owner_id=?').bind(T).first()).n,
+      provider:(await env.DB.prepare('SELECT provider FROM identities WHERE user_id=? ORDER BY id').bind(U).all()).results.map(x=>x.provider)};
+    if(path==='/api/link/preview'){
+      await env.DB.prepare('UPDATE logins SET exp=? WHERE hash=? AND exp<?').bind(now()+600,hc,now()+600).run();   // 확인하는 동안 코드가 만료되지 않게
+      return J(U===T?{same:true}:{same:false,plans:st.plans,shared:st.shared,providers:st.provider});
+    }
+    if(U===T){await env.DB.prepare('DELETE FROM logins WHERE hash=?').bind(hc).run();return J({ok:true,merged:false})}
+    const empty=st.plans===0&&st.shared===0;
+    if(!empty&&b.merge!==true)return J({error:'merge_required',plans:st.plans,shared:st.shared},409);
+    if(st.mine+st.plans>MAXPLANS)return J({error:'limit'},400);
+    const del=await env.DB.prepare('DELETE FROM logins WHERE hash=? AND exp>? AND cc=?').bind(hc,now(),hv).run();
+    if(!del.meta.changes)return J({error:'code'},401);
+    const q=(x,...a)=>env.DB.prepare(x).bind(...a);
+    await env.DB.batch([
+      q('UPDATE identities SET user_id=? WHERE user_id=?',T,U),
+      q('UPDATE plans SET owner_id=? WHERE owner_id=?',T,U),
+      q('DELETE FROM plan_members WHERE user_id=? AND plan_id IN (SELECT plan_id FROM plan_members WHERE user_id=?)',U,T),
+      q('UPDATE plan_members SET user_id=? WHERE user_id=?',T,U),
+      q('DELETE FROM plan_members WHERE user_id=? AND plan_id IN (SELECT id FROM plans WHERE owner_id=?)',T,T),
+      q('DELETE FROM sessions WHERE user_id=?',U),q('DELETE FROM logins WHERE user_id=?',U),
+      q("UPDATE users SET name=(SELECT name FROM users WHERE id=?) WHERE id=? AND name=''",U,T),
+      q('DELETE FROM users WHERE id=?',U)]);
+    return J({ok:true,merged:!empty});
+  }
 
   const check=d=>d&&typeof d==='object'&&!Array.isArray(d)&&Array.isArray(d.days)&&JSON.stringify(d).length<=MAX;
   const sum=d=>[String(d.title||'').slice(0,200),String(d.sub||'').slice(0,200),String(d.start||'').slice(0,10),Number.isInteger(+d.tpl)&&+d.tpl>=0&&+d.tpl<10?+d.tpl:0];
