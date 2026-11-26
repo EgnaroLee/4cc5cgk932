@@ -57,6 +57,26 @@ npx wrangler deploy
 이전(비밀번호 + GitHub 커밋) 방식에서 쓰던 `ADMIN_PASSWORD`, `GITHUB_TOKEN` 시크릿과 `OWNER`, `REPO` 변수는 더 이상 쓰지 않습니다.
 Cloudflare 대시보드에서 삭제하고, GitHub 의 Personal access token 도 폐기하세요.
 
+## 6. 이미 운영 중인 DB 를 공유 기능으로 올릴 때
+
+`migrations/002_sharing.sql` 을 **한 번만** 실행합니다. (새로 설치하는 경우는 `schema.sql` 에 이미 포함)
+기존 DB 에서 링크 공유 중이던 플랜북은 자동으로 "링크로 보기"가 됩니다. 이 변경은 이전 Worker 코드와도 호환되므로 Worker 배포보다 먼저 실행해도 됩니다.
+
+```bash
+npx wrangler d1 execute planbook --remote --file=migrations/002_sharing.sql
+```
+
+## 공유 범위
+
+| 구분 | 선택지 |
+| --- | --- |
+| 링크 공유 (`access`) | `private` 나만 · `view` 링크가 있는 누구나 보기(로그인 불필요) · `edit` 링크가 있는 **로그인한** 누구나 편집 |
+| 초대 링크 | 링크를 받은 사람이 로그인하면 구성원이 됨. 역할 `viewer`(보기) / `editor`(편집), 유효기간 1·7·30일 또는 무제한, 언제든 삭제 |
+| 구성원 | 소유자가 역할 변경·내보내기. 본인은 스스로 나가기 가능 |
+
+권한은 소유자 > 편집자 > 보기 순서입니다. 편집자는 내용만 고칠 수 있고, 삭제·공유 설정·초기화는 소유자만 할 수 있습니다.
+저장할 때마다 `rev` 가 올라가고, 다른 사람이 먼저 저장했다면 409 로 거절하여 내용이 조용히 덮어써지는 것을 막습니다.
+
 ## API 요약
 
 | 경로 | 설명 |
@@ -65,8 +85,11 @@ Cloudflare 대시보드에서 삭제하고, GitHub 의 Personal access token 도
 | `GET /auth/{google,kakao}/callback` | 제공자가 돌아오는 주소 → 사이트로 `#code=` 와 함께 이동 |
 | `POST /auth/exchange` | 1회용 코드(60초) → 세션 토큰(30일) |
 | `POST /auth/logout` | 세션 삭제 |
-| `GET /api/plans` · `POST /api/plans` | 내 플랜북 목록 · 새로 만들기 (최대 50개) |
-| `GET/PUT/DELETE /api/plans/:id` | 내 플랜북 읽기·저장·삭제 (`GET` 은 `?s=<공유토큰>` 으로 읽기 전용 열람 가능) |
-| `POST/DELETE /api/plans/:id/share` | 공유 링크 만들기(`{"rotate":true}` 로 교체) · 끄기 |
+| `GET /api/plans` · `POST /api/plans` | 내 플랜북 + 공유받은 플랜북 목록 · 새로 만들기 (최대 50개) |
+| `GET/PUT/DELETE /api/plans/:id` | 읽기 · 저장(`{data, rev}`) · 삭제(소유자). 링크로 접근할 때는 `?s=<토큰>` |
+| `PUT /api/plans/:id/sharing` | 링크 공유 범위 변경 `{access, rotate?}` (소유자) |
+| `POST /api/plans/:id/invites` · `DELETE …/invites/:token` | 초대 링크 만들기 `{role, days}` · 삭제 (소유자) |
+| `PUT/DELETE /api/plans/:id/members/:userId` | 구성원 역할 변경 · 내보내기. `members/me` 는 스스로 나가기 |
+| `GET /api/invites/:token` · `POST …/accept` | 초대 미리보기(로그인 불필요) · 수락 |
 
-남의 플랜북에 접근하면 존재 여부를 알려 주지 않고 404 를 돌려줍니다.
+남의 플랜북에 접근하면 존재 여부를 알려 주지 않고 404 를 돌려줍니다. 외부 이미지 주소는 저장하지 않고, 티켓 링크는 `https` 만 허용합니다.
