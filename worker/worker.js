@@ -13,6 +13,11 @@ const hmac=async(k,s)=>{const key=await crypto.subtle.importKey('raw',enc.encode
 const same=(a,b)=>{a=String(a||'');b=String(b||'');let d=a.length^b.length;for(let i=0;i<Math.max(a.length,b.length);i++)d|=(a.charCodeAt(i)||0)^(b.charCodeAt(i)||0);return d===0};
 const ID=/^[a-z0-9]{12}$/,TK=/^[a-z0-9]{24}$/,MAX=300000,MAXPLANS=50,MAXMEMBERS=20,MAXINVITES=10,SESSION_DAYS=30;
 const now=()=>Math.floor(Date.now()/1000);
+const sleep=ms=>new Promise(r=>setTimeout(r,ms));
+// 구글·카카오 서버 호출은 8초 안에 끝나지 않으면 포기한다 (무한 로딩 방지)
+const pf=(u,o={})=>fetch(u,{...o,signal:AbortSignal.timeout(8000)});
+// 제공자가 돌려준 오류 코드만 화면에 알려 준다 (인가 코드 등이 들어 있는 설명문은 제외)
+const ecode=j=>String((j&&(j.error_code||j.code||j.error))||'').replace(/[^A-Za-z0-9_-]/g,'').slice(0,24);
 // 외부 이미지는 받지 않고, 링크는 https 만 허용한다
 const cleanUrl=u=>{const t=String(u||'');if(!t||t.length>500)return '';try{const x=new URL(t);return x.protocol==='https:'?x.href:''}catch{return ''}};
 const clean=d=>{d.cover='';(d.days||[]).forEach(x=>{if(x&&typeof x==='object')delete x.img});if(Array.isArray(d.tickets))d.tickets.forEach(t=>{if(t&&typeof t==='object')t.url=cleanUrl(t.url)});return d};
@@ -53,6 +58,7 @@ export default{async fetch(req,env){
       const n=tok(16),p=b64u(enc.encode(JSON.stringify({n,e:now()+600,r:ret,c:cc})));
       const state=p+'.'+await hmac(env.SESSION_SECRET,p);
       const q=new URLSearchParams({client_id:P.key(env),redirect_uri:redirect,response_type:'code',scope:P.scope,state});
+      if(r[1]==='kakao'&&url.searchParams.get('acct')==='1')q.set('through_account','true');   // 카카오톡 앱 대신 카카오계정 로그인 화면으로
       return go(P.auth+'?'+q,{'Set-Cookie':`pb_n=${n}; Max-Age=600; Path=/auth; HttpOnly; Secure; SameSite=Lax`});
     }
     // callback
@@ -62,31 +68,58 @@ export default{async fetch(req,env){
     const ck=(req.headers.get('Cookie')||'').match(/(?:^|;\s*)pb_n=([^;]+)/);
     if(st.e<now()||!ck||!same(ck[1],st.n)||!okReturn(env,st.r)||!/^[A-Za-z0-9_-]{43}$/.test(st.c||''))return J({error:'state'},400);
     const clr={'Set-Cookie':'pb_n=; Max-Age=0; Path=/auth; HttpOnly; Secure; SameSite=Lax'};
-    const fail=c=>go(st.r+'#error='+c,clr);
+    const fail=(c,d)=>go(st.r+'#error='+c+(d?'&d='+encodeURIComponent(d):''),clr);
     const code=url.searchParams.get('code');
     if(!code)return fail('denied');
-    const body=new URLSearchParams({grant_type:'authorization_code',code,redirect_uri:redirect,client_id:P.key(env)});
-    if(P.secret(env))body.set('client_secret',P.secret(env));
-    const tr=await fetch(P.token,{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body});
-    const tj=await tr.json().catch(()=>({}));
-    if(!tr.ok||!tj.access_token)return fail('token');
-    const ur=await fetch(P.me,{headers:{Authorization:'Bearer '+tj.access_token}});
-    if(!ur.ok)return fail('profile');
-    const u=P.user(await ur.json().catch(()=>({})));
-    if(!u.pid)return fail('profile');
-    const nm=String(u.name||'').slice(0,60);
-    let idn=await env.DB.prepare('SELECT id,user_id FROM identities WHERE provider=? AND pid=?').bind(r[1],u.pid).first();
-    if(!idn){
-      const nu=await env.DB.prepare("INSERT INTO users(provider,pid,name,created) VALUES('acct',?,?,?) RETURNING id").bind(lid(16),nm,now()).first();
-      try{await env.DB.prepare('INSERT INTO identities(provider,pid,user_id,name,created) VALUES(?,?,?,?,?)').bind(r[1],u.pid,nu.id,nm,now()).run()}
-      catch{await env.DB.prepare('DELETE FROM users WHERE id=?').bind(nu.id).run()}   // 동시에 처음 로그인한 경우
-      idn=await env.DB.prepare('SELECT id,user_id FROM identities WHERE provider=? AND pid=?').bind(r[1],u.pid).first();
-      if(!idn)return fail('profile');
-    }else if(nm){
-      await env.DB.batch([env.DB.prepare('UPDATE identities SET name=? WHERE id=?').bind(nm,idn.id),env.DB.prepare("UPDATE users SET name=? WHERE id=? AND name=''").bind(nm,idn.user_id)]);
+
+    // 제공자 서버와 통신해 계정을 찾거나 만든다. 실패하면 {err,d}, 성공하면 {uid}
+    const exchange=async()=>{
+      const body=new URLSearchParams({grant_type:'authorization_code',code,redirect_uri:redirect,client_id:P.key(env)});
+      if(P.secret(env))body.set('client_secret',P.secret(env));
+      let tr,tj,ur,uj;
+      try{tr=await pf(P.token,{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body});tj=await tr.json().catch(()=>({}))}
+      catch(e){console.log('provider token fetch failed',r[1],e&&e.name);return {err:e&&e.name==='TimeoutError'?'timeout':'network'}}
+      if(!tr.ok||!tj.access_token){console.log('provider token error',r[1],tr.status,ecode(tj));return {err:'token',d:ecode(tj)||('H'+tr.status)}}
+      try{ur=await pf(P.me,{headers:{Authorization:'Bearer '+tj.access_token}});uj=await ur.json().catch(()=>({}))}
+      catch(e){console.log('provider profile fetch failed',r[1],e&&e.name);return {err:e&&e.name==='TimeoutError'?'timeout':'network'}}
+      if(!ur.ok){console.log('provider profile error',r[1],ur.status,ecode(uj));return {err:'profile',d:ecode(uj)||('H'+ur.status)}}
+      const u=P.user(uj);if(!u.pid)return {err:'profile',d:'nopid'};
+      const nm=String(u.name||'').slice(0,60);
+      let idn=await env.DB.prepare('SELECT id,user_id FROM identities WHERE provider=? AND pid=?').bind(r[1],u.pid).first();
+      if(!idn){
+        const nu=await env.DB.prepare("INSERT INTO users(provider,pid,name,created) VALUES('acct',?,?,?) RETURNING id").bind(lid(16),nm,now()).first();
+        try{await env.DB.prepare('INSERT INTO identities(provider,pid,user_id,name,created) VALUES(?,?,?,?,?)').bind(r[1],u.pid,nu.id,nm,now()).run()}
+        catch{await env.DB.prepare('DELETE FROM users WHERE id=?').bind(nu.id).run()}   // 동시에 처음 로그인한 경우
+        idn=await env.DB.prepare('SELECT id,user_id FROM identities WHERE provider=? AND pid=?').bind(r[1],u.pid).first();
+        if(!idn)return {err:'profile',d:'identity'};
+      }else if(nm){
+        await env.DB.batch([env.DB.prepare('UPDATE identities SET name=? WHERE id=?').bind(nm,idn.id),env.DB.prepare("UPDATE users SET name=? WHERE id=? AND name=''").bind(nm,idn.user_id)]);
+      }
+      return {uid:idn.user_id};
+    };
+
+    // 같은 인가 코드로 콜백이 두 번 불려도(카카오톡 앱 전환 등) 한 번만 처리하고, 두 번째는 같은 결과를 이어 받는다.
+    // 인가 코드는 제공자가 한 번만 받아 주므로, 이렇게 하지 않으면 한쪽이 "코드 재사용"으로 실패한다.
+    await env.DB.prepare('DELETE FROM oauth_codes WHERE exp<?').bind(now()).run();
+    const ch=await sha(r[1]+':'+code);
+    const claim=await env.DB.prepare('INSERT OR IGNORE INTO oauth_codes(hash,user_id,exp) VALUES(?,NULL,?)').bind(ch,now()+120).run();
+    let uid=null;
+    if(!claim.meta.changes){
+      for(let i=0;i<20&&!uid;i++){
+        const row=await env.DB.prepare('SELECT user_id FROM oauth_codes WHERE hash=?').bind(ch).first();
+        if(!row)break;                                   // 먼저 처리하던 쪽이 실패해서 지워짐
+        if(row.user_id)uid=row.user_id;else await sleep(400);
+      }
+      if(!uid)return fail('token','duplicate');
+    }else{
+      let x;
+      try{x=await exchange()}catch(e){console.log('callback error',r[1],e&&e.name);x={err:'server',d:String(e&&e.name||'').replace(/[^A-Za-z0-9_-]/g,'').slice(0,24)}}
+      if(x.err){await env.DB.prepare('DELETE FROM oauth_codes WHERE hash=?').bind(ch).run().catch(()=>{});return fail(x.err,x.d)}
+      uid=x.uid;
+      await env.DB.prepare('UPDATE oauth_codes SET user_id=? WHERE hash=?').bind(uid,ch).run();
     }
     const c=tok(24);
-    await env.DB.prepare('INSERT INTO logins(hash,user_id,exp,cc) VALUES(?,?,?,?)').bind(await sha(c),idn.user_id,now()+60,st.c).run();
+    await env.DB.prepare('INSERT INTO logins(hash,user_id,exp,cc) VALUES(?,?,?,?)').bind(await sha(c),uid,now()+60,st.c).run();
     return go(st.r+'#code='+c,clr);
   }
 

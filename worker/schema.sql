@@ -60,3 +60,8 @@ CREATE TABLE IF NOT EXISTS plan_invites(  -- 초대 링크
   created INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS invites_plan ON plan_invites(plan_id);
+CREATE TABLE IF NOT EXISTS oauth_codes(  -- 제공자 인가 코드 처리 기록 (콜백이 두 번 불려도 한 번만 처리, 120초)
+  hash TEXT PRIMARY KEY,
+  user_id INTEGER,
+  exp INTEGER NOT NULL
+);

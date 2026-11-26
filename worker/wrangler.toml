@@ -21,3 +21,7 @@ simple = { limit = 4, period = 60 }
 name = "EDIT_RL"         # 저장·생성·삭제·공유 등 데이터 변경: 계정 별
 namespace_id = "1002"
 simple = { limit = 4, period = 60 }
+
+# 로그인 실패 원인 등을 Cloudflare 대시보드(Workers → Observability)에서 볼 수 있도록 로그 보관
+[observability]
+enabled = true

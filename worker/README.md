@@ -64,6 +64,7 @@ Cloudflare 대시보드에서 삭제하고, GitHub 의 Personal access token 도
 ```bash
 npx wrangler d1 execute planbook --remote --file=migrations/002_sharing.sql   # 공유 범위 (이미 실행했다면 건너뜀)
 npx wrangler d1 execute planbook --remote --file=migrations/003_accounts.sql  # 계정 연결 (로그인 수단 분리)
+npx wrangler d1 execute planbook --remote --file=migrations/004_oauth_codes.sql  # 로그인 콜백 중복 처리 방지
 ```
 
 > **배포 순서**: 003 → Worker 코드 교체(Deploy) → 사이트(PR 병합). 새 로그인 방식은 사이트와 Worker 가 함께 바뀌어야 하므로 Worker 교체와 PR 병합은 가까운 시간에 하세요.
@@ -91,6 +92,17 @@ npx wrangler d1 execute planbook --remote --file=migrations/003_accounts.sql  # 
 - 횟수를 바꾸려면 `limit` 을 고치고 다시 배포하세요. `period` 는 10 또는 60 만 쓸 수 있습니다.
 - Cloudflare 의 이 기능은 서버 지역별로 따로 세기 때문에 정확한 한도가 아니라 "대략 막는 안전망"입니다.
 - 설정이 없거나 제한 장치에 오류가 나도 서비스는 막지 않고 통과시킵니다.
+
+## 카카오 로그인이 휴대폰에서 실패할 때
+
+| 증상 | 원인 | 대응 |
+| --- | --- | --- |
+| "카카오톡으로 로그인할 수 없습니다" 화면, 오래 로딩 | 카카오 로그인 페이지가 휴대폰의 카카오톡 앱을 불러오지 못함 (카카오 쪽) | 로그인 화면의 "카카오계정(아이디·비밀번호)으로 로그인" 링크 (`acct=1` → 카카오 `through_account=true`) |
+| 로그인했는데 "로그인에 실패했습니다" | 카카오톡 앱 전환 때 같은 인가 코드로 콜백이 두 번 불리거나, 결과가 다른 탭으로 도착 | 콜백을 코드 단위로 한 번만 처리(`oauth_codes`), 로그인 검증값을 `localStorage` 에 두고, 다른 탭에서 방금 성공한 로그인은 이어서 사용 |
+| 그 밖의 실패 | 카카오 설정 오류 등 | 실패 화면에 **원인 코드**(예: `KOE010`)가 표시됨. 구글·카카오 서버 호출은 8초 안에 끝나지 않으면 `timeout` 으로 실패 처리 |
+
+- 자주 보이는 코드: `KOE320` 인가 코드 재사용, `KOE010` 클라이언트 시크릿 불일치, `KOE303` Redirect URI 불일치, `KOE101` 앱 키 오류.
+- 서버 로그는 `wrangler.toml` 의 `[observability]` 로 보관되며, Cloudflare 대시보드 Workers → `planbook-admin` → Observability 에서 볼 수 있습니다 (비밀 값은 기록하지 않음).
 
 ## 이용약관 · 개인정보처리방침
 

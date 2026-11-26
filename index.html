@@ -41,6 +41,7 @@ h1{margin:0 0 4px;font-family:var(--fh);font-size:24px}.mut{color:var(--mut);fon
 .sb.g{background:#fff;color:#1f1f1f;border-color:#dadce0}.sb.k{background:#fee500;color:#191919;border-color:#fee500}
 .sec{font-size:15px;margin:26px 0 0;color:var(--mut)}
 .mask{position:fixed;inset:0;z-index:20;background:#000a;display:flex;align-items:center;justify-content:center;padding:16px}.dlg{width:100%;max-width:380px;margin:0}
+.alt{font-size:13px;color:var(--mut);margin:14px auto 0;max-width:320px}.alt a{color:var(--acc)}
 .legal{font-size:12px;color:var(--mut);text-align:center;margin:22px 0 0}.legal a{color:inherit}.h4{margin:16px 0 4px;font-size:14px}.dlg ul{margin:6px 0;padding-left:20px}.row{display:flex;gap:6px;align-items:center;margin:4px 0}.acts{display:flex;gap:6px;flex-wrap:wrap;margin-top:8px}
 .msg{margin-top:14px;color:var(--warn);font-size:13px}
 </style></head>
@@ -52,15 +53,17 @@ const LS={get:k=>{try{return localStorage.getItem(k)}catch{return null}},set:(k,
 const SS={get:k=>{try{return sessionStorage.getItem(k)}catch{return null}},set:(k,v)=>{try{sessionStorage.setItem(k,v)}catch{}},del:k=>{try{sessionStorage.removeItem(k)}catch{}}};
 const b64u=b=>btoa(String.fromCharCode(...new Uint8Array(b))).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');
 const sha=async s=>b64u(await crypto.subtle.digest('SHA-256',new TextEncoder().encode(s)));
-let CV=SS.get('pb_cv');if(!CV){CV=b64u(crypto.getRandomValues(new Uint8Array(32)));SS.set('pb_cv',CV)}
+const newCV=()=>{const v=b64u(crypto.getRandomValues(new Uint8Array(32)));LS.set('pb_cv',v);return v};
+let CV=LS.get('pb_cv')||newCV();   // 새 탭/앱 전환으로 돌아와도 같은 값을 쓰도록 localStorage
 let CC='';
 const DEF=['overview','map','glance','flights','hotels','days','tickets','transport','shop','prep','tips'];
 const blank=()=>({title:'',sub:'',kicker:'',code:'',start:'',airline:'',overview:'',tpl:0,cover:'',days:[],hotels:[],flights:[],tickets:[],shop:[],transport:[],check:[],tips:'',order:DEF.slice(),hide:[]});
 const TE=['✈️','🛫','🧳','🗼','🌊','🌴','🌃','⛰️','🏜️','📮'];
-const ERR={rate:'로그인 시도가 너무 많습니다. 1분 뒤에 다시 시도해 주세요',denied:'로그인이 취소되었습니다',token:'로그인에 실패했습니다. 다시 시도해 주세요',profile:'계정 정보를 가져오지 못했습니다',code:'로그인 코드가 만료되었습니다. 다시 시도해 주세요'};
+const HINT={KOE320:'로그인 코드가 이미 사용되었습니다. 다시 한 번 로그인해 주세요.',KOE010:'서버의 카카오 설정이 맞지 않습니다. 운영자에게 알려 주세요.',KOE303:'카카오 Redirect URI 설정이 맞지 않습니다. 운영자에게 알려 주세요.',KOE101:'카카오 앱 키 설정이 맞지 않습니다. 운영자에게 알려 주세요.',invalid_grant:'로그인 코드가 만료되었거나 이미 사용되었습니다. 다시 로그인해 주세요.',duplicate:'같은 로그인이 중복 처리되었습니다. 다시 로그인해 주세요.'};
+const ERR={timeout:'로그인 서버 응답이 늦어 실패했습니다. 잠시 뒤 다시 시도해 주세요',network:'로그인 서버에 연결하지 못했습니다. 잠시 뒤 다시 시도해 주세요',server:'로그인 처리 중 문제가 생겼습니다. 잠시 뒤 다시 시도해 주세요',rate:'로그인 시도가 너무 많습니다. 1분 뒤에 다시 시도해 주세요',denied:'로그인이 취소되었습니다',token:'로그인에 실패했습니다. 다시 시도해 주세요',profile:'계정 정보를 가져오지 못했습니다',code:'로그인 코드가 만료되었습니다. 다시 시도해 주세요'};
 let T=LS.get('pb_token'),ui={name:LS.get('pb_name')||'',list:null,shared:[],edit:false,msg:'',loading:true,offline:false,invite:null,dlg:null,acct:null,merge:null};
 const PV={google:'Google',kakao:'카카오'};
-const startUrl=p=>API+'auth/'+p+'/start?return='+encodeURIComponent(here())+'&cc='+CC;
+const startUrl=(p,acct)=>API+'auth/'+p+'/start?return='+encodeURIComponent(here())+'&cc='+CC+(acct?'&acct=1':'');
 const api=async(p,o={})=>{
   const r=await fetch(API+p,{...o,headers:{...(o.body?{'Content-Type':'application/json'}:{}),...(T?{Authorization:'Bearer '+T}:{})}});
   const j=await r.json().catch(()=>({}));
@@ -81,7 +84,7 @@ function render(){
   let bar,main;
   if(!T){
     bar='<div class="bar"><b>✈ PLANBOOK</b></div>';
-    main=`<main class="login"><h1>귤율 여행 플랜북</h1>${ui.invite?`<div class="card" style="max-width:320px;margin:18px auto 0"><b>${esc(ui.invite.title)||'제목 없는 플랜북'}</b><div class="mut">플랜북에 초대되었습니다 · ${RL[ui.invite.role]}<br>로그인하면 바로 참여합니다</div></div>`:'<div class="mut">로그인하면 내가 만든 플랜북이 모두 보입니다</div>'}<div class="btns"><a class="sb g" href="${startUrl('google')}">Google로 계속하기</a><a class="sb k" href="${startUrl('kakao')}">카카오로 계속하기</a></div><p class="legal">로그인하면 <a href="terms.html">이용약관</a>과 <a href="privacy.html">개인정보처리방침</a>에 동의한 것으로 봅니다.</p>${ui.msg?`<div class="msg">${esc(ui.msg)}</div>`:''}</main>`;
+    main=`<main class="login"><h1>귤율 여행 플랜북</h1>${ui.invite?`<div class="card" style="max-width:320px;margin:18px auto 0"><b>${esc(ui.invite.title)||'제목 없는 플랜북'}</b><div class="mut">플랜북에 초대되었습니다 · ${RL[ui.invite.role]}<br>로그인하면 바로 참여합니다</div></div>`:'<div class="mut">로그인하면 내가 만든 플랜북이 모두 보입니다</div>'}<div class="btns"><a class="sb g" href="${startUrl('google')}">Google로 계속하기</a><a class="sb k" href="${startUrl('kakao')}">카카오로 계속하기</a></div><p class="alt">카카오톡 앱이 열리지 않거나 오래 걸리면 <a href="${startUrl('kakao',true)}">카카오계정(아이디·비밀번호)으로 로그인</a></p><p class="legal">로그인하면 <a href="terms.html">이용약관</a>과 <a href="privacy.html">개인정보처리방침</a>에 동의한 것으로 봅니다.</p>${ui.msg?`<div class="msg">${esc(ui.msg)}</div>`:''}</main>`;
   }else{
     bar=`<div class="bar"><b>✈ PLANBOOK</b><span class="sub">${esc(ui.name)}</span><button class="${ui.edit?'pri':''}" data-a="edit">${ui.edit?'완료':'관리'}</button><button data-a="acct">계정</button></div>`;
     const L=ui.list,SH=ui.shared||[];
@@ -90,16 +93,16 @@ function render(){
   const foot=T?'<p class="legal">© 귤율 여행 플랜북 · <a href="terms.html">이용약관</a> · <a href="privacy.html">개인정보처리방침</a></p>':'';
   $('app').innerHTML=bar+main.replace(/<\/main>$/,foot+'</main>')+dialogs();
 }
-const idRow=x=>`<div class="row"><span style="flex:1"><b>${PV[x.provider]||esc(x.provider)}</b> <span class="mut">${esc(x.name)}</span></span>${ui.acct.identities.length>1?`<button class="dng" data-a="unlink" data-id="${x.id}">해제</button>`:''}</div>`;
+const idRow=x=>`<div class="row"><span style="flex:1"><b>${PV[x.provider]||esc(x.provider)}</b> <span class="mut">${esc(x.name)}</span></span>${(ui.acct.identities||[]).length>1?`<button class="dng" data-a="unlink" data-id="${x.id}">해제</button>`:''}</div>`;
 function dialogs(){
   if(ui.dlg==='merge'&&ui.merge){
     const m=ui.merge;
     return `<div class="mask"><div class="card dlg"><b>계정 합치기</b><p>연결하려는 ${m.providers.map(x=>PV[x]||x).join('·')} 계정에 이미 데이터가 있습니다.</p><ul><li>플랜북 <b>${m.plans}개</b></li><li>공유받은 플랜북 <b>${m.shared}개</b></li></ul><p class="mut">합치면 모두 <b>지금 로그인한 계정</b>으로 옮겨지고, 상대 계정은 사라집니다. <b>되돌릴 수 없습니다.</b></p>${ui.msg?`<div class="msg">${esc(ui.msg)}</div>`:''}<div class="acts"><button class="pri" data-a="domerge">합치기</button><button data-a="closedlg">취소</button></div></div></div>`;
   }
   if(ui.dlg==='acct'){
-    const A=ui.acct,has=A?A.identities.map(x=>x.provider):[];
+    const A=ui.acct,has=A?(A.identities||[]).map(x=>x.provider):[];
     return `<div class="mask"><div class="card dlg" style="max-height:90vh;overflow:auto"><b>계정</b>${!A?'<p class="mut">불러오는 중…</p>':`
-      <h4 class="h4">연결된 로그인</h4>${A.identities.map(idRow).join('')}
+      <h4 class="h4">연결된 로그인</h4>${(A.identities||[]).map(idRow).join('')}
       ${['google','kakao'].some(p=>!has.includes(p))?`<p class="mut">다른 로그인도 연결해 두면 어느 쪽으로 들어와도 같은 플랜북이 보입니다.</p><div class="acts">${['google','kakao'].filter(p=>!has.includes(p)).map(p=>`<button data-a="link" data-p="${p}">${PV[p]} 연결</button>`).join('')}</div>`:''}
       <h4 class="h4">로그아웃 · 삭제</h4><div class="acts"><button data-a="logout">로그아웃</button><button class="dng" data-a="delacct">계정 삭제</button></div>
       <p class="legal"><a href="terms.html">이용약관</a> · <a href="privacy.html">개인정보처리방침</a></p>`}
@@ -127,7 +130,7 @@ document.addEventListener('click',async e=>{
   else if(a==='acct'){ui.dlg='acct';ui.acct=null;render();try{ui.acct=await api('api/me')}catch(x){ui.dlg=null;ui.msg='계정 정보를 불러오지 못했습니다'}render()}
   else if(a==='closedlg'){ui.dlg=null;ui.merge=null;SS.del('pb_linkcode');render()}
   else if(a==='logout'){try{await api('auth/logout',{method:'POST'})}catch{}T=null;clearLocal();ui={name:'',list:null,shared:[],edit:false,msg:'',loading:false,offline:false,invite:null,dlg:null,acct:null,merge:null};render()}
-  else if(a==='link'){SS.set('pb_link','1');location.href=startUrl(b.dataset.p)}
+  else if(a==='link'){LS.set('pb_link',String(Date.now()));location.href=startUrl(b.dataset.p)}
   else if(a==='unlink'){if(!confirm('이 로그인 수단을 해제할까요? 해제하면 이 방법으로는 더 이상 이 계정에 들어올 수 없습니다.'))return;try{await api('api/identities/'+b.dataset.id,{method:'DELETE'});ui.acct=await api('api/me')}catch(x){ui.msg=x.message==='last'?'마지막 로그인 수단은 해제할 수 없습니다':'해제하지 못했습니다'}render()}
   else if(a==='domerge'){b.disabled=true;try{await api('api/link',{method:'POST',body:JSON.stringify({code:SS.get('pb_linkcode'),cv:SS.get('pb_linkcv'),merge:true})});SS.del('pb_linkcode');SS.del('pb_linkcv');ui.dlg=null;ui.merge=null;ui.msg='';await load();ui.msg='계정을 합쳤습니다';render()}catch(x){ui.msg=x.message==='limit'?'합치면 플랜북이 50개를 넘어 합칠 수 없습니다':x.message==='code'?'시간이 지나 만료되었습니다. 다시 연결해 주세요':'합치지 못했습니다 ('+x.message+')';render()}}
   else if(a==='delacct'){
@@ -145,23 +148,27 @@ document.addEventListener('click',async e=>{
   if(qj){LS.set('pb_join',qj);history.replaceState(null,'',location.pathname)}
   const h=new URLSearchParams(location.hash.slice(1));
   if(h.has('code')||h.has('error')){history.replaceState(null,'',location.pathname+location.search)}
-  if(h.has('error'))ui.msg=ERR[h.get('error')]||'로그인에 실패했습니다';
+  if(h.has('error')){const d=(h.get('d')||'').replace(/[^A-Za-z0-9_-]/g,'').slice(0,24);ui.msg=(ERR[h.get('error')]||'로그인에 실패했습니다')+(d?(HINT[d]?' '+HINT[d]:'')+' (원인 코드: '+d+')':'')}
   if(h.has('code')){
     const code=h.get('code');
-    if(SS.get('pb_link')==='1'&&T){
+    const lk=+(LS.get('pb_link')||0),linkMode=lk>0&&Date.now()-lk<600000;LS.del('pb_link');
+    if(linkMode&&T){
       // 계정 연결 모드: 새 세션을 만들지 않고, 받은 코드를 지금 로그인한 계정에 붙인다
-      SS.del('pb_link');SS.set('pb_linkcode',code);SS.set('pb_linkcv',CV);
+      SS.set('pb_linkcode',code);SS.set('pb_linkcv',CV);
       try{
         const pv=await api('api/link/preview',{method:'POST',body:JSON.stringify({code,cv:CV})});
         if(pv.same){SS.del('pb_linkcode');ui.msg='이미 이 계정에 연결되어 있습니다'}
         else if(pv.plans===0&&pv.shared===0){await api('api/link',{method:'POST',body:JSON.stringify({code,cv:CV})});SS.del('pb_linkcode');ui.msg='로그인 수단을 연결했습니다'}
         else{ui.merge=pv;ui.dlg='merge'}
-        SS.del('pb_cv');CV=b64u(crypto.getRandomValues(new Uint8Array(32)));SS.set('pb_cv',CV);CC=await sha(CV);
+        CV=newCV();CC=await sha(CV);
       }catch(x){ui.msg=x.status===401?'연결 시간이 지났습니다. 다시 시도해 주세요':'연결하지 못했습니다 ('+x.message+')'}
     }else{
-      SS.del('pb_link');
-      try{const j=await api('auth/exchange',{method:'POST',body:JSON.stringify({code,cv:CV})});T=j.token;ui.name=j.user.name||'';LS.set('pb_token',T);LS.set('pb_name',ui.name);SS.del('pb_cv');CV=b64u(crypto.getRandomValues(new Uint8Array(32)));SS.set('pb_cv',CV);CC=await sha(CV)}
-      catch(x){ui.msg=ERR.code}
+      try{const j=await api('auth/exchange',{method:'POST',body:JSON.stringify({code,cv:CV})});T=j.token;ui.name=j.user.name||'';LS.set('pb_token',T);LS.set('pb_name',ui.name);LS.set('pb_login_at',String(Date.now()));CV=newCV();CC=await sha(CV)}
+      catch(x){
+        // 같은 로그인이 다른 탭(카카오톡 앱 전환 등)에서 방금 성공했다면 그 로그인을 이어 쓴다
+        const t2=LS.get('pb_token'),at=+(LS.get('pb_login_at')||0);
+        if(t2&&Date.now()-at<120000){T=t2;ui.name=LS.get('pb_name')||'';ui.msg=''}else ui.msg=ERR.code
+      }
     }
   }
   const pj=LS.get('pb_join');
