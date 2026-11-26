@@ -1,5 +1,12 @@
 name = "planbook-admin"
 main = "worker.js"
 compatibility_date = "2026-11-01"
-# 대시보드에 설정된 평문 변수(OWNER, REPO, ALLOW_ORIGIN 등)를 배포 시 지우지 않는다
-keep_vars = true
+
+[vars]
+# 사이트 origin (경로 없이). 저장소 이름을 바꾼 뒤에도 origin은 같다.
+ALLOW_ORIGIN = "https://egnarolee.github.io"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "planbook"
+database_id = "REPLACE_WITH_D1_DATABASE_ID"   # wrangler d1 create planbook 결과의 id

@@ -72,6 +72,9 @@ input[type=checkbox]{width:auto;margin:5px 0 0}label.ck{display:flex;gap:10px;pa
 const API='https://planbook-admin.sukzzang0907.workers.dev/',$=id=>document.getElementById(id);
 const PID=new URLSearchParams(location.search).get('id')||'trip261225';
 if(!/^[a-z0-9-]{1,40}$/.test(PID))location.replace('./');
+const SH=new URLSearchParams(location.search).get('s')||'';
+const TK=(()=>{try{return localStorage.getItem('pb_token')}catch{return null}})();
+let dead=false;
 const DEF=['overview','map','glance','flights','hotels','days','tickets','transport','shop','prep','tips'];
 const IC={overview:'🧭',map:'🗺️',glance:'🗓️',flights:'✈️',hotels:'🏨',days:'📅',tickets:'🎫',transport:'🚇',shop:'🛍️',prep:'🧳',tips:'💡'};
 const LB={overview:'여행 개요',map:'통합 지도',glance:'추천 일정',flights:'항공편',hotels:'숙소',days:'Day 상세',tickets:'e-티켓',transport:'대중교통',shop:'쇼핑&기념품',prep:'준비물',tips:'팁'};
@@ -94,31 +97,24 @@ const norm=o=>{const d=blank();for(const k in d)if(o[k]==null)o[k]=d[k];
 let S=blank(),ui={edit:false,msg:'',sync:'',dlg:null,loading:true,mapDay:-1,sq:false};
 let G=null,sha=null,last=JSON.stringify(S),DR=null,M=null;
 const note=t=>{ui.sync=t;const e=$('sy');if(e)e.textContent=t};
-const call=async(op,data)=>{
-  if(!API)throw new Error('관리 서버 주소(API)가 아직 설정되지 않았습니다');
-  const r=await fetch(API,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({op,pw:G.pw,id:PID,data})});
+const call=async(path,method='GET',data)=>{
+  const r=await fetch(API+path,{method,headers:{...(data!==undefined?{'Content-Type':'application/json'}:{}),...(TK?{Authorization:'Bearer '+TK}:{})},body:data!==undefined?JSON.stringify(data):undefined});
   const j=await r.json().catch(()=>({}));
-  if(!r.ok)throw new Error(j.error==='pw'?'비밀번호가 올바르지 않습니다':'서버 오류 ('+(j.error||r.status)+')');
+  if(!r.ok)throw Object.assign(new Error(r.status===401?'로그인이 필요합니다':r.status===404?'플랜북을 찾을 수 없습니다':'서버 오류 ('+(j.error||r.status)+')'),{status:r.status});
   return j;
 };
-async function loadLatest(){const j=await call('get');if(j.data&&Array.isArray(j.data.days)){S=norm(j.data)}last=JSON.stringify(S)}
 async function commit(){
-  note('GitHub 저장 중…');const snap=JSON.stringify(S);
-  try{await call('put',S);last=snap;note('커밋됨 · 사이트 반영까지 최대 10분')}catch(e){note('저장 실패: '+e.message)}
+  note('저장 중…');const snap=JSON.stringify(S);
+  try{await call('api/plans/'+PID,'PUT',{data:S});last=snap;note('저장됨')}catch(e){note('저장 실패: '+e.message)}
 }
-const save=()=>{if(G&&ui.edit&&JSON.stringify(S)!==last)note('저장 안 됨 · 완료를 누르면 GitHub에 저장됩니다')};
+const save=()=>{if(G&&ui.edit&&JSON.stringify(S)!==last)note('저장 안 됨 · 완료를 누르면 저장됩니다')};
 async function finish(){
   if(G&&JSON.stringify(S)!==last)await commit();
   if(!G||JSON.stringify(S)===last)ui.edit=false;
   render();
 }
 addEventListener('beforeunload',e=>{if(G&&ui.edit&&JSON.stringify(S)!==last){e.preventDefault();e.returnValue=''}});
-async function unlock(){
-  G={pw:$('pw').value};
-  try{await loadLatest();ui.dlg=null;ui.edit=true;ui.msg='';render()}
-  catch(e){G=null;ui.msg=e.message;render()}
-}
-const dlg=()=>!ui.dlg?'':`<div class="mask"><div class="card dlg"><b>관리자 비밀번호</b><input id="pw" type="password" placeholder="비밀번호" autocomplete="off"><div class="acts"><button class="pri" data-a="unlock">확인</button><button data-a="cancel">취소</button></div><p class="sub">${esc(ui.msg)}</p></div></div>`;
+const dlg=()=>'';
 const esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 const mapQ=q=>'https://www.google.com/maps/search/?api=1&query='+encodeURIComponent(q);
 const get=p=>p.split('.').reduce((o,k)=>o[k],S);
@@ -200,7 +196,7 @@ function showQ(v){v=v.trim().toLowerCase();const R=[];
 function render(keep=true){
   const y=scrollY,N=S.days.length,gp=groups();
   document.documentElement.dataset.t=S.tpl;document.title=S.title||'플랜북';
-  const bar=`<div class="bar"><a class="back" href="./">← 목록</a><b>✈ PLANBOOK</b><span class="sub">${dd()} <span id="sy">${esc(ui.sync)}</span></span><button data-a="search">🔍</button><button data-a="today">오늘</button><button data-a="share">공유</button><button class="${ui.edit?'pri':''}" data-a="edit">${ui.edit?'완료':'관리'}</button></div>`;
+  const bar=`<div class="bar"><a class="back" href="./">← 목록</a><b>✈ PLANBOOK</b><span class="sub">${dd()} <span id="sy">${esc(ui.sync)}</span></span><button data-a="search">🔍</button><button data-a="today">오늘</button><button data-a="share">공유</button>${G?`<button class="${ui.edit?'pri':''}" data-a="edit">${ui.edit?'완료':'관리'}</button>`:''}</div>`;
   if(ui.loading){$('app').innerHTML=bar+'<div class="load">✈️<br>플랜을 불러오는 중…</div>';return}
   const vis=DEF.length&&S.order.filter(k=>ui.edit||(!S.hide.includes(k)&&!emptyK(k)));
   const dl=S.days.map((d,i)=>`<a href="#d${i+1}">D${p2(i+1)} ${fl(d.city,d)} ${esc(d.city)}</a>`).join('');
@@ -222,7 +218,7 @@ function render(keep=true){
    days:S.days.map(day).join('')+(ui.edit?'<section><button class="add" data-a="addday">+ Day 추가</button></section>':''),
    prep:sec('prep',prep()),
    tips:sec('tips',ui.edit?ta('tips',S.tips,'현지 팁 · 메모'):`<div class="card note" style="color:var(--ink)">${esc(S.tips)}</div>`)};
-  const admin=ui.edit?`<section id="admin"><div class="en">admin</div><h2>백업 · 불러오기</h2><textarea id="bk" style="min-height:220px;font-size:12px">${esc(JSON.stringify(S,null,1))}</textarea><div class="acts"><button data-a="copy">복사</button><button data-a="load">이 내용으로 불러오기</button><button class="dng" data-a="reset">빈 플랜으로 초기화</button></div><p class="sub">${esc(ui.msg)}</p></section>`:'';
+  const admin=ui.edit?`<section id="admin"><div class="en">admin</div><h2>백업 · 불러오기</h2><textarea id="bk" style="min-height:220px;font-size:12px">${esc(JSON.stringify(S,null,1))}</textarea><div class="acts"><button data-a="rotate">공유 링크 새로 만들기</button><button data-a="unshare">공유 끄기</button></div><div class="acts"><button data-a="copy">복사</button><button data-a="load">이 내용으로 불러오기</button><button class="dng" data-a="reset">빈 플랜으로 초기화</button></div><p class="sub">${esc(ui.msg)}</p></section>`:'';
   $('app').innerHTML=bar+(ui.sq?'<div class="sbox"><input id="q" placeholder="장소·일정·맛집 검색" autocomplete="off"><div id="qr"></div></div>':'')+`<aside class="side"><h4>Document</h4><a href="#cover">🛫 표지</a>${side}</aside><main>${cover}${none}${basic}${vis.map(k=>BL[k]).join('')}${admin}</main>${dlg()}<nav class="bnav"><a href="#cover">🛫 표지</a>${bn}</nav>`;
   document.querySelectorAll('[data-bg]').forEach(e=>{e.style.backgroundImage=`url("${e.dataset.bg.replace(/"/g,'%22')}")`});
   if(keep)scrollTo(0,y);
@@ -231,9 +227,7 @@ function render(keep=true){
 document.addEventListener('click',e=>{
   const b=e.target.closest('[data-a]');if(!b)return;
   const a=b.dataset.a,i=+b.dataset.i,k=b.dataset.k,s=+b.dataset.s;let ren=true,sv=true;
-  if(a==='edit'){if(ui.edit){ren=sv=false;finish()}else if(G)ui.edit=true;else ui.dlg='unlock'}
-  else if(a==='unlock'){ren=sv=false;unlock()}
-  else if(a==='cancel'){ui.dlg=null;ui.msg=''}
+  if(a==='edit'){if(ui.edit){ren=sv=false;finish()}else if(G)ui.edit=true}
   else if(a==='search'){ren=sv=false;ui.sq=!ui.sq;render();if(ui.sq)$('q')?.focus()}
   else if(a==='tpl')S.tpl=i;
   else if(a==='smv'){const j=i+s;if(j>=0&&j<S.order.length)[S.order[i],S.order[j]]=[S.order[j],S.order[i]]}
@@ -241,7 +235,9 @@ document.addEventListener('click',e=>{
   else if(a==='mday'){ui.mapDay=i;sv=false}
   else if(a==='geo'){ren=sv=false;geo()}
   else if(a==='today'){const n=Math.round((today()-dt(0))/864e5);$('d'+(n>=0&&n<S.days.length?n+1:1))?.scrollIntoView();ren=sv=false}
-  else if(a==='share'){ren=sv=false;try{navigator.clipboard.writeText(location.href);note('링크 복사됨')}catch(x){note('주소창의 링크를 복사하세요')}}
+  else if(a==='share'){ren=sv=false;(async()=>{try{let u=location.origin+location.pathname+'?id='+PID;if(G){u+='&s='+(await call('api/plans/'+PID+'/share','POST',{})).share}else if(SH)u+='&s='+SH;await navigator.clipboard.writeText(u);note('공유 링크 복사됨 (읽기 전용)')}catch(x){note('링크를 복사하지 못했습니다')}})()}
+  else if(a==='rotate'){ren=sv=false;(async()=>{try{const u=location.origin+location.pathname+'?id='+PID+'&s='+(await call('api/plans/'+PID+'/share','POST',{rotate:true})).share;await navigator.clipboard.writeText(u);note('새 공유 링크 복사됨 · 이전 링크는 더 이상 열리지 않습니다')}catch(x){note('새 링크를 만들지 못했습니다')}})()}
+  else if(a==='unshare'){ren=sv=false;(async()=>{try{await call('api/plans/'+PID+'/share','DELETE');note('공유가 해제되었습니다')}catch(x){note('공유를 해제하지 못했습니다')}})()}
   else if(a==='addday')S.days.push({city:S.days.at(-1)?.city||'',items:[],foods:[],img:''});
   else if(a==='sortday')S.days[i].items.sort((x,y)=>(x.time||'99:99').localeCompare(y.time||'99:99'));
   else if(a==='delday')S.days.splice(i,1);
@@ -274,5 +270,14 @@ document.addEventListener('dragend',()=>{DR=null;document.querySelectorAll('.dra
 document.addEventListener('drop',e=>{const t=e.target.closest&&e.target.closest('[data-dt]');if(!DR||!t)return;e.preventDefault();const [d2,i2]=t.dataset.dt.split('.').map(Number);moveItem(DR[0],DR[1],d2,i2);DR=null;save();render()});
 render(false);
 if('serviceWorker' in navigator)navigator.serviceWorker.register('sw.js').catch(()=>{});
-fetch('data/'+PID+'.json?'+Date.now(),{cache:'no-store'}).then(r=>r.ok?r.json():null).then(o=>{if(o&&Array.isArray(o.days)&&!ui.edit){S=norm(o);last=JSON.stringify(S)}}).catch(()=>{}).finally(()=>{ui.loading=false;render(false)});
+const CK='pb_c_'+PID;
+call('api/plans/'+PID+(SH?'?s='+encodeURIComponent(SH):'')).then(j=>{
+  if(j.role==='owner')G={owner:true};
+  if(j.data&&Array.isArray(j.data.days)&&!ui.edit){S=norm(j.data);last=JSON.stringify(S)}
+  try{localStorage.setItem(CK,JSON.stringify(j.data))}catch{}
+}).catch(e=>{
+  if(e.status===401&&!TK){dead=true;location.replace('./');return}
+  if(e.status===401||e.status===404){dead=true;$('app').innerHTML='<main style="max-width:480px;margin:0 auto;padding:60px 16px;text-align:center"><h2>열 수 없는 플랜북입니다</h2><p class="sub">없는 플랜북이거나 볼 수 있는 권한이 없습니다.</p><a href="./" style="color:var(--acc)">← 내 플랜북으로</a></main>';return}
+  try{const c=JSON.parse(localStorage.getItem(CK));if(c&&Array.isArray(c.days)){S=norm(c);last=JSON.stringify(S)}}catch{}
+}).finally(()=>{if(dead)return;ui.loading=false;render(false)});
 </script></body></html>

@@ -18,96 +18,88 @@
 body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.6 system-ui,-apple-system,"Apple SD Gothic Neo","Noto Sans KR",sans-serif}
 body::before{content:"";position:fixed;inset:0 0 auto;height:env(safe-area-inset-top,0px);background:var(--navy);z-index:10}
 .bar{position:sticky;top:env(safe-area-inset-top,0px);z-index:9;background:var(--navy);color:#fff;display:flex;align-items:center;gap:6px;padding:8px 12px}
-.bar b{letter-spacing:.14em;font-size:13px;flex:1}.bar .sub{color:#b9c2cf;font-size:12px}
+.bar b{letter-spacing:.14em;font-size:13px;flex:1}.bar .sub{color:#b9c2cf;font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:40vw}
 button{font:inherit;border:1px solid var(--line);background:var(--card);color:var(--ink);border-radius:8px;padding:6px 10px;cursor:pointer}
-.bar button{background:transparent;color:#fff;border-color:#ffffff44;font-size:12px;padding:5px 9px}.bar .pri,.pri{background:var(--acc);color:var(--onacc);border-color:var(--acc)}
-input{width:100%;font:inherit;color:var(--ink);background:var(--bg);border:1px solid var(--line);border-radius:8px;padding:7px 9px;margin:3px 0}
+.bar button{background:transparent;color:#fff;border-color:#ffffff44;font-size:12px;padding:5px 9px;white-space:nowrap}.bar .pri,.pri{background:var(--acc);color:var(--onacc);border-color:var(--acc)}
 main{max-width:640px;margin:0 auto;padding:22px 16px calc(40px + env(safe-area-inset-bottom,0px))}
 h1{margin:0 0 4px;font-family:var(--fh);font-size:24px}.mut{color:var(--mut);font-size:13px}
 .list{display:grid;gap:12px;margin-top:16px}
-.pb{display:flex;overflow:hidden;background:var(--card);color:var(--ink);border:1px solid var(--line);border-radius:var(--r);text-decoration:none}
+.pb{display:flex;overflow:hidden;background:var(--card);color:var(--ink);border:1px solid var(--line);border-radius:var(--r)}
+.pb .lk{display:flex;flex:1;min-width:0;color:inherit;text-decoration:none}
 .pb .th{flex:none;width:92px;background:linear-gradient(160deg,var(--navy),color-mix(in srgb,var(--navy),#fff 16%)) center/cover;border-right:2px dashed var(--line);display:flex;align-items:center;justify-content:center;font-size:30px}
 .pb .in{flex:1;min-width:0;padding:12px 14px}.pb h2{margin:0;font-family:var(--fh);font-size:17px}
 .pb p{margin:2px 0 0;font-size:13px;color:var(--mut);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .pb .dt{display:inline-block;margin-top:6px;font:11px ui-monospace,monospace;letter-spacing:.08em;color:var(--acc)}
-.pb .lk{display:flex;flex:1;min-width:0;color:inherit;text-decoration:none}
-.ed{display:flex;flex-direction:column;justify-content:center;gap:4px;padding:6px}.ed button{padding:3px 9px;font-size:13px}
-.row{display:flex;gap:6px;align-items:stretch}.row input{flex:1}
-.card{background:var(--card);border:1px solid var(--line);border-radius:var(--r);padding:12px 14px;margin-top:14px}
-.dng{color:var(--warn)}.msg{margin-top:10px;color:var(--warn);font-size:13px}
-.mask{position:fixed;inset:0;z-index:20;background:#000a;display:flex;align-items:center;justify-content:center;padding:16px}.dlg{width:100%;max-width:380px;margin:0}
-.acts{display:flex;gap:6px;margin-top:6px}
+.ed{display:flex;align-items:center;padding:6px}.dng{color:var(--warn)}
+.card{background:var(--card);border:1px solid var(--line);border-radius:var(--r);padding:12px 14px}
+.add{width:100%;border-style:dashed;margin-top:12px;padding:12px}
+.login{text-align:center;padding-top:56px}.login h1{font-size:30px}
+.login .btns{display:grid;gap:10px;max-width:320px;margin:28px auto 0}
+.sb{display:block;padding:12px 14px;border-radius:10px;font-weight:700;text-decoration:none;border:1px solid var(--line)}
+.sb.g{background:#fff;color:#1f1f1f;border-color:#dadce0}.sb.k{background:#fee500;color:#191919;border-color:#fee500}
+.msg{margin-top:14px;color:var(--warn);font-size:13px}
 </style></head>
 <body><div id="app"></div>
 <script>
 const API='https://planbook-admin.sukzzang0907.workers.dev/',$=id=>document.getElementById(id);
 const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-const IDRE=/^[a-z0-9-]{1,40}$/,isU=u=>/^https?:\/\//.test(u||'');
+const isU=u=>/^https?:\/\//.test(u||'');
+const LS={get:k=>{try{return localStorage.getItem(k)}catch{return null}},set:(k,v)=>{try{localStorage.setItem(k,v)}catch{}},del:k=>{try{localStorage.removeItem(k)}catch{}}};
 const DEF=['overview','map','glance','flights','hotels','days','tickets','transport','shop','prep','tips'];
 const blank=()=>({title:'',sub:'',kicker:'',code:'',start:'',airline:'',overview:'',tpl:0,cover:'',days:[],hotels:[],flights:[],tickets:[],shop:[],transport:[],check:[],tips:'',order:DEF.slice(),hide:[]});
 const TE=['✈️','🛫','🧳','🗼','🌊','🌴','🌃','⛰️','🏜️','📮'];
-let L=[],D={},G=null,ui={edit:false,msg:'',sync:'',dlg:false,loading:true},fresh=new Set(),last='[]';
-const call=async(op,id,data)=>{
-  const body={op,pw:G.pw};if(id)body.id=id;if(data!==undefined)body.data=data;
-  const r=await fetch(API,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+const ERR={denied:'로그인이 취소되었습니다',token:'로그인에 실패했습니다. 다시 시도해 주세요',profile:'계정 정보를 가져오지 못했습니다',code:'로그인 코드가 만료되었습니다. 다시 시도해 주세요'};
+let T=LS.get('pb_token'),ui={name:LS.get('pb_name')||'',list:null,edit:false,msg:'',loading:true,offline:false};
+const api=async(p,o={})=>{
+  const r=await fetch(API+p,{...o,headers:{...(o.body?{'Content-Type':'application/json'}:{}),...(T?{Authorization:'Bearer '+T}:{})}});
   const j=await r.json().catch(()=>({}));
-  if(!r.ok)throw new Error(j.error==='pw'?'비밀번호가 올바르지 않습니다':'서버 오류 ('+(j.error||r.status)+')');
+  if(r.status===401&&T){T=null;LS.del('pb_token');ui.list=null}
+  if(!r.ok)throw Object.assign(new Error(j.error||r.status),{status:r.status});
   return j;
 };
 const dday=s=>{if(!s)return '';const t=new Date();t.setHours(0,0,0,0);const n=Math.round((new Date(s+'T00:00:00')-t)/864e5);return isNaN(n)?'':n>0?'D-'+n:n===0?'D-DAY':''};
-const card=(id,i)=>{
-  const d=D[id]||blank(),t=Number.isInteger(+d.tpl)&&+d.tpl>=0&&+d.tpl<10?+d.tpl:0;
-  const bg=isU(d.cover)?` style="background-image:url('${esc(d.cover)}')"`:'';
-  const body=`<div class="th"${bg}>${isU(d.cover)?'':TE[t]}</div><div class="in"><h2>${esc(d.title)||'제목 없는 플랜북'}</h2>${d.sub?`<p>${esc(d.sub)}</p>`:''}<span class="dt">${esc(d.start||'')}${dday(d.start)?' · '+dday(d.start):''}${fresh.has(id)?' · 새 플랜북':''}</span></div>`;
-  const ed=ui.edit?`<div class="ed"><button data-a="up" data-i="${i}" ${i?'':'disabled'}>↑</button><button data-a="dn" data-i="${i}" ${i<L.length-1?'':'disabled'}>↓</button><button class="dng" data-a="rm" data-i="${i}">제거</button></div>`:'';
-  return `<div class="pb" data-t="${t}"><a class="lk" href="plan.html?id=${id}">${body}</a>${ed}</div>`;
+const here=()=>location.origin+location.pathname;
+const card=p=>{
+  const t=Number.isInteger(+p.tpl)&&+p.tpl>=0&&+p.tpl<10?+p.tpl:0,bg=isU(p.cover)?` style="background-image:url('${esc(p.cover)}')"`:'';
+  const dd=dday(p.start);
+  return `<div class="pb" data-t="${t}"><a class="lk" href="plan.html?id=${esc(p.id)}"><div class="th"${bg}>${isU(p.cover)?'':TE[t]}</div><div class="in"><h2>${esc(p.title)||'제목 없는 플랜북'}</h2>${p.sub?`<p>${esc(p.sub)}</p>`:''}<span class="dt">${esc(p.start||'')}${dd?' · '+dd:''}</span></div></a>${ui.edit?`<div class="ed"><button class="dng" data-a="del" data-id="${esc(p.id)}">삭제</button></div>`:''}</div>`;
 };
 function render(){
-  const bar=`<div class="bar"><b>✈ PLANBOOK</b><span class="sub" id="sy">${esc(ui.sync)}</span><button class="${ui.edit?'pri':''}" data-a="edit">${ui.edit?'완료':'관리'}</button></div>`;
-  const list=L.length?L.map(card).join(''):`<div class="card mut">${ui.loading?'불러오는 중…':'아직 플랜북이 없습니다.'}</div>`;
-  const add=ui.edit?`<div class="card"><b>플랜북 추가</b><div class="mut">영문 소문자·숫자·하이픈, 1~40자 (예: phuquoc1225)</div><div class="row"><input id="nid" placeholder="플랜북 id" autocomplete="off" autocapitalize="off"><button data-a="add">추가</button></div>${ui.msg?`<div class="msg">${esc(ui.msg)}</div>`:''}</div>`:'';
-  const dlg=ui.dlg?`<div class="mask"><div class="card dlg"><b>관리자 비밀번호</b><input id="pw" type="password" placeholder="비밀번호" autocomplete="off"><div class="acts"><button class="pri" data-a="unlock">확인</button><button data-a="cancel">취소</button></div>${ui.msg?`<div class="msg">${esc(ui.msg)}</div>`:''}</div></div>`:'';
-  $('app').innerHTML=bar+`<main><h1>내 플랜북</h1><div class="mut">${L.length}개의 플랜북</div><div class="list">${list}</div>${add}</main>`+dlg;
-  if(ui.dlg&&$('pw'))$('pw').focus();
-}
-async function loadData(ids){await Promise.all(ids.filter(id=>!D[id]).map(id=>fetch('data/'+id+'.json?'+Date.now(),{cache:'no-store'}).then(r=>r.ok?r.json():null).then(o=>{if(o)D[id]=o}).catch(()=>{})))}
-async function unlock(){
-  G={pw:$('pw').value};
-  try{const j=await call('plans_get');if(j.data&&Array.isArray(j.data.plans))L=j.data.plans;last=JSON.stringify(L);await loadData(L);ui.dlg=false;ui.edit=true;ui.msg='';render()}
-  catch(e){G=null;ui.msg=e.message;render()}
-}
-async function finish(){
-  ui.msg='';ui.sync='GitHub 저장 중…';render();
-  try{
-    for(const id of fresh){
-      if(!L.includes(id))continue;
-      const g=await call('get',id);               // 이미 있는 데이터는 덮어쓰지 않는다
-      if(!g.data)await call('put',id,D[id]||blank());
-    }
-    await call('plans_put',null,{plans:L});
-    last=JSON.stringify(L);fresh=new Set();ui.edit=false;ui.sync='커밋됨 · 사이트 반영까지 최대 10분';
-  }catch(e){ui.sync='';ui.msg='저장 실패: '+e.message}
-  render();
-}
-document.addEventListener('click',e=>{
-  const b=e.target.closest('[data-a]');if(!b)return;const a=b.dataset.a,i=+b.dataset.i;
-  if(a==='edit'){if(ui.edit){finish();return}if(G){ui.edit=true;render()}else{ui.dlg=true;ui.msg='';render()}}
-  else if(a==='unlock')unlock();
-  else if(a==='cancel'){ui.dlg=false;ui.msg='';render()}
-  else if(a==='up'&&i>0){[L[i-1],L[i]]=[L[i],L[i-1]];render()}
-  else if(a==='dn'&&i<L.length-1){[L[i+1],L[i]]=[L[i],L[i+1]];render()}
-  else if(a==='rm'){if(confirm('목록에서 제거할까요? (플랜북 파일은 삭제되지 않습니다)')){fresh.delete(L[i]);L.splice(i,1);render()}}
-  else if(a==='add'){
-    const id=($('nid').value||'').trim();
-    if(!IDRE.test(id))ui.msg='id는 영문 소문자·숫자·하이픈 1~40자만 쓸 수 있습니다';
-    else if(L.includes(id))ui.msg='이미 목록에 있는 id입니다';
-    else if(L.length>=50)ui.msg='플랜북은 최대 50개까지입니다';
-    else{ui.msg='';L.push(id);fresh.add(id);if(!D[id])loadData([id]).then(render)}
-    render();
+  let bar,main;
+  if(!T){
+    bar='<div class="bar"><b>✈ PLANBOOK</b></div>';
+    const q=encodeURIComponent(here());
+    main=`<main class="login"><h1>내 플랜북</h1><div class="mut">로그인하면 내가 만든 플랜북이 모두 보입니다</div><div class="btns"><a class="sb g" href="${API}auth/google/start?return=${q}">Google로 계속하기</a><a class="sb k" href="${API}auth/kakao/start?return=${q}">카카오로 계속하기</a></div>${ui.msg?`<div class="msg">${esc(ui.msg)}</div>`:''}</main>`;
+  }else{
+    bar=`<div class="bar"><b>✈ PLANBOOK</b><span class="sub">${esc(ui.name)}</span><button class="${ui.edit?'pri':''}" data-a="edit">${ui.edit?'완료':'관리'}</button><button data-a="logout">로그아웃</button></div>`;
+    const L=ui.list;
+    main=`<main><h1>내 플랜북</h1><div class="mut">${L?L.length+'개의 플랜북':''}${ui.offline?' · 오프라인 (마지막으로 본 목록)':''}</div><div class="list">${L?(L.length?L.map(card).join(''):'<div class="card mut">아직 플랜북이 없습니다. 아래 버튼으로 첫 플랜북을 만들어 보세요.</div>'):`<div class="card mut">${ui.loading?'불러오는 중…':'목록을 불러오지 못했습니다'}</div>`}</div><button class="add" data-a="new">＋ 새 플랜북</button>${ui.msg?`<div class="msg">${esc(ui.msg)}</div>`:''}</main>`;
   }
+  $('app').innerHTML=bar+main;
+}
+async function load(){
+  if(!T){ui.loading=false;return render()}
+  try{const j=await api('api/plans');ui.list=j.plans;ui.offline=false;LS.set('pb_list',JSON.stringify(j.plans))}
+  catch(e){if(e.status!==401){try{ui.list=JSON.parse(LS.get('pb_list')||'null');ui.offline=!!ui.list}catch{}}}
+  ui.loading=false;render();
+}
+document.addEventListener('click',async e=>{
+  const b=e.target.closest('[data-a]');if(!b)return;const a=b.dataset.a;ui.msg='';
+  if(a==='edit'){ui.edit=!ui.edit;render()}
+  else if(a==='logout'){try{await api('auth/logout',{method:'POST'})}catch{}T=null;['pb_token','pb_name','pb_list'].forEach(LS.del);ui={name:'',list:null,edit:false,msg:'',loading:false,offline:false};render()}
+  else if(a==='new'){b.disabled=true;try{const j=await api('api/plans',{method:'POST',body:JSON.stringify({data:blank()})});location.href='plan.html?id='+j.id}catch(x){ui.msg=x.message==='limit'?'플랜북은 최대 50개까지 만들 수 있습니다':'만들지 못했습니다 ('+x.message+')';render()}}
+  else if(a==='del'){if(!confirm('이 플랜북을 삭제할까요? 되돌릴 수 없습니다.'))return;try{await api('api/plans/'+b.dataset.id,{method:'DELETE'});await load()}catch(x){ui.msg='삭제하지 못했습니다 ('+x.message+')';render()}}
 });
-document.addEventListener('keydown',e=>{if(e.key==='Enter'&&e.target.id==='pw')unlock();if(e.key==='Enter'&&e.target.id==='nid')document.querySelector('[data-a="add"]').click()});
-render();
-if('serviceWorker' in navigator)navigator.serviceWorker.register('sw.js').catch(()=>{});
-fetch('plans.json?'+Date.now(),{cache:'no-store'}).then(r=>r.ok?r.json():null).then(async o=>{if(o&&Array.isArray(o.plans)&&!ui.edit){L=o.plans.filter(x=>IDRE.test(x));last=JSON.stringify(L);await loadData(L)}}).catch(()=>{}).finally(()=>{ui.loading=false;render()});
+(async()=>{
+  const h=new URLSearchParams(location.hash.slice(1));
+  if(h.has('code')||h.has('error')){history.replaceState(null,'',location.pathname+location.search)}
+  if(h.has('error'))ui.msg=ERR[h.get('error')]||'로그인에 실패했습니다';
+  if(h.has('code')){
+    try{const j=await api('auth/exchange',{method:'POST',body:JSON.stringify({code:h.get('code')})});T=j.token;ui.name=j.user.name||'';LS.set('pb_token',T);LS.set('pb_name',ui.name)}
+    catch(x){ui.msg=ERR.code}
+  }
+  render();
+  if('serviceWorker' in navigator)navigator.serviceWorker.register('sw.js').catch(()=>{});
+  load();
+})();
 </script></body></html>
