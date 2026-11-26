@@ -1,0 +1,5 @@
+name = "planbook-admin"
+main = "worker.js"
+compatibility_date = "2026-11-01"
+# 대시보드에 설정된 평문 변수(OWNER, REPO, ALLOW_ORIGIN 등)를 배포 시 지우지 않는다
+keep_vars = true
