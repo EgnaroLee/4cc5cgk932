@@ -57,7 +57,7 @@ let CC='';
 const DEF=['overview','map','glance','flights','hotels','days','tickets','transport','shop','prep','tips'];
 const blank=()=>({title:'',sub:'',kicker:'',code:'',start:'',airline:'',overview:'',tpl:0,cover:'',days:[],hotels:[],flights:[],tickets:[],shop:[],transport:[],check:[],tips:'',order:DEF.slice(),hide:[]});
 const TE=['✈️','🛫','🧳','🗼','🌊','🌴','🌃','⛰️','🏜️','📮'];
-const ERR={denied:'로그인이 취소되었습니다',token:'로그인에 실패했습니다. 다시 시도해 주세요',profile:'계정 정보를 가져오지 못했습니다',code:'로그인 코드가 만료되었습니다. 다시 시도해 주세요'};
+const ERR={rate:'로그인 시도가 너무 많습니다. 1분 뒤에 다시 시도해 주세요',denied:'로그인이 취소되었습니다',token:'로그인에 실패했습니다. 다시 시도해 주세요',profile:'계정 정보를 가져오지 못했습니다',code:'로그인 코드가 만료되었습니다. 다시 시도해 주세요'};
 let T=LS.get('pb_token'),ui={name:LS.get('pb_name')||'',list:null,shared:[],edit:false,msg:'',loading:true,offline:false,invite:null,dlg:null,acct:null,merge:null};
 const PV={google:'Google',kakao:'카카오'};
 const startUrl=p=>API+'auth/'+p+'/start?return='+encodeURIComponent(here())+'&cc='+CC;
@@ -65,7 +65,7 @@ const api=async(p,o={})=>{
   const r=await fetch(API+p,{...o,headers:{...(o.body?{'Content-Type':'application/json'}:{}),...(T?{Authorization:'Bearer '+T}:{})}});
   const j=await r.json().catch(()=>({}));
   if(r.status===401&&T&&j.error==='auth'){T=null;LS.del('pb_token');ui.list=null}   // 세션 만료일 때만 로그아웃 처리 (로그인 코드 오류 등은 제외)
-  if(!r.ok)throw Object.assign(new Error(j.error||r.status),{status:r.status});
+  if(!r.ok)throw Object.assign(new Error(r.status===429?'요청이 너무 많습니다. 1분 뒤에 다시 시도해 주세요':(j.error||r.status)),{status:r.status});
   return j;
 };
 const dday=s=>{if(!s)return '';const t=new Date();t.setHours(0,0,0,0);const n=Math.round((new Date(s+'T00:00:00')-t)/864e5);return isNaN(n)?'':n>0?'D-'+n:n===0?'D-DAY':''};

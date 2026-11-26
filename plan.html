@@ -109,7 +109,7 @@ const note=t=>{ui.sync=t;const e=$('sy');if(e)e.textContent=t};
 const call=async(path,method='GET',data)=>{
   const r=await fetch(API+path,{method,headers:{...(data!==undefined?{'Content-Type':'application/json'}:{}),...(TK?{Authorization:'Bearer '+TK}:{})},body:data!==undefined?JSON.stringify(data):undefined});
   const j=await r.json().catch(()=>({}));
-  if(!r.ok)throw Object.assign(new Error(r.status===401?'로그인이 필요합니다':r.status===404?'플랜북을 찾을 수 없습니다':r.status===403?'권한이 없습니다':'서버 오류 ('+(j.error||r.status)+')'),{status:r.status,body:j});
+  if(!r.ok)throw Object.assign(new Error(r.status===401?'로그인이 필요합니다':r.status===404?'플랜북을 찾을 수 없습니다':r.status===403?'권한이 없습니다':r.status===429?'요청이 너무 많습니다. 1분 뒤에 다시 시도해 주세요':'서버 오류 ('+(j.error||r.status)+')'),{status:r.status,body:j});
   return j;
 };
 const qs=()=>SH?'?s='+encodeURIComponent(SH):'';

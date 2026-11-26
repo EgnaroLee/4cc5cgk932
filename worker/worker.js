@@ -34,6 +34,10 @@ export default{async fetch(req,env){
   const J=(o,s=200,h={})=>new Response(JSON.stringify(o),{status:s,headers:{...cors,...h,'Content-Type':'application/json'}});
   const go=(to,h={})=>new Response(null,{status:302,headers:{Location:to,...h}});
   if(m==='OPTIONS')return new Response(null,{headers:cors});
+  // 호출 횟수 제한: 로그인 시작(IP별), 데이터 변경(계정별) 각각 60초에 4번 (wrangler.toml 의 ratelimits)
+  const ip=req.headers.get('CF-Connecting-IP')||'unknown';
+  const limited=async(rl,key)=>{if(!rl)return false;try{return !(await rl.limit({key})).success}catch{return false}};
+  const tooMany=()=>J({error:'rate'},429,{'Retry-After':'60'});
 
   // ───────── 소셜 로그인 ─────────
   let r=path.match(/^\/auth\/(google|kakao)\/(start|callback)$/);
@@ -43,6 +47,7 @@ export default{async fetch(req,env){
       const ret=url.searchParams.get('return');
       if(!P.key(env)||!env.SESSION_SECRET)return J({error:'not_configured'},503);
       if(!okReturn(env,ret))return J({error:'return'},400);
+      if(await limited(env.LOGIN_RL,'ip:'+ip))return go(ret+'#error=rate');
       const cc=url.searchParams.get('cc')||'';
       if(!/^[A-Za-z0-9_-]{43}$/.test(cc))return J({error:'cc'},400);
       const n=tok(16),p=b64u(enc.encode(JSON.stringify({n,e:now()+600,r:ret,c:cc})));
@@ -101,6 +106,8 @@ export default{async fetch(req,env){
   const bearer=(req.headers.get('Authorization')||'').replace(/^Bearer /,'');
   const me=bearer?await env.DB.prepare('SELECT u.id,u.name FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.hash=? AND s.exp>?').bind(await sha(bearer),now()).first():null;
   const body=async()=>{try{return await req.json()}catch{return null}};
+  // 데이터를 바꾸는 요청(저장·생성·삭제·공유·초대·계정 연결 등)은 계정별로 제한. 조회와 로그아웃, 연결 미리보기는 제외
+  if(me&&m!=='GET'&&path.startsWith('/api/')&&path!=='/api/link/preview'&&await limited(env.EDIT_RL,'u:'+me.id))return tooMany();
 
   if(path==='/auth/logout'&&m==='POST'){if(bearer)await env.DB.prepare('DELETE FROM sessions WHERE hash=?').bind(await sha(bearer)).run();return J({ok:true})}
 
