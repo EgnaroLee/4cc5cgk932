@@ -9,4 +9,4 @@ ALLOW_ORIGIN = "https://egnarolee.github.io"
 [[d1_databases]]
 binding = "DB"
 database_name = "planbook"
-database_id = "REPLACE_WITH_D1_DATABASE_ID"   # wrangler d1 create planbook 결과의 id
+database_id = "32d454b0-5a6d-4e41-8c58-9a6736494093"   # wrangler d1 create planbook 결과의 id
