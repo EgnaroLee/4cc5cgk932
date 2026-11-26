@@ -1,4 +1,4 @@
-// Cloudflare Worker: 소셜 로그인(Google/Kakao) + 사용자별 플랜북 저장(D1)
+// Cloudflare Worker: 소셜 로그인(Google/Kakao) + 사용자별 플랜북 저장(D1) + 공유(링크/초대/구성원)
 // Bindings : DB (D1)
 // Vars     : ALLOW_ORIGIN (사이트 origin, 쉼표로 여러 개 가능. 예: https://egnarolee.github.io)
 // Secrets  : SESSION_SECRET, GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, KAKAO_REST_KEY, (선택) KAKAO_CLIENT_SECRET
@@ -11,8 +11,11 @@ const lid=n=>[...rnd(n)].map(x=>'abcdefghijklmnopqrstuvwxyz0123456789'[x%36]).jo
 const sha=async s=>b64u(await crypto.subtle.digest('SHA-256',enc.encode(s)));
 const hmac=async(k,s)=>{const key=await crypto.subtle.importKey('raw',enc.encode(k),{name:'HMAC',hash:'SHA-256'},false,['sign']);return b64u(await crypto.subtle.sign('HMAC',key,enc.encode(s)))};
 const same=(a,b)=>{a=String(a||'');b=String(b||'');let d=a.length^b.length;for(let i=0;i<Math.max(a.length,b.length);i++)d|=(a.charCodeAt(i)||0)^(b.charCodeAt(i)||0);return d===0};
-const ID=/^[a-z0-9]{12}$/,MAX=300000,MAXPLANS=50,SESSION_DAYS=30;
+const ID=/^[a-z0-9]{12}$/,TK=/^[a-z0-9]{24}$/,MAX=300000,MAXPLANS=50,MAXMEMBERS=20,MAXINVITES=10,SESSION_DAYS=30;
 const now=()=>Math.floor(Date.now()/1000);
+// 외부 이미지는 받지 않고, 링크는 https 만 허용한다
+const cleanUrl=u=>{const t=String(u||'');if(!t||t.length>500)return '';try{const x=new URL(t);return x.protocol==='https:'?x.href:''}catch{return ''}};
+const clean=d=>{d.cover='';(d.days||[]).forEach(x=>{if(x&&typeof x==='object')delete x.img});if(Array.isArray(d.tickets))d.tickets.forEach(t=>{if(t&&typeof t==='object')t.url=cleanUrl(t.url)});return d};
 
 const PROV={
   google:{auth:'https://accounts.google.com/o/oauth2/v2/auth',token:'https://oauth2.googleapis.com/token',me:'https://openidconnect.googleapis.com/v1/userinfo',scope:'openid profile',
@@ -86,62 +89,135 @@ export default{async fetch(req,env){
   // ───────── 인증이 필요한 API ─────────
   const bearer=(req.headers.get('Authorization')||'').replace(/^Bearer /,'');
   const me=bearer?await env.DB.prepare('SELECT u.id,u.name FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.hash=? AND s.exp>?').bind(await sha(bearer),now()).first():null;
-
-  r=path.match(/^\/api\/plans\/([^/]+)(?:\/(share))?$/);
-  const pid=r&&r[1];
-  if(r&&!ID.test(pid))return J({error:'not_found'},404);
+  const body=async()=>{try{return await req.json()}catch{return null}};
 
   if(path==='/auth/logout'&&m==='POST'){if(bearer)await env.DB.prepare('DELETE FROM sessions WHERE hash=?').bind(await sha(bearer)).run();return J({ok:true})}
 
-  // 공유 링크로 읽기 전용 열람 (로그인 불필요)
-  if(r&&!r[2]&&m==='GET'){
-    const p=await env.DB.prepare('SELECT owner_id,data,share FROM plans WHERE id=?').bind(pid).first();
-    const s=url.searchParams.get('s');
-    if(p&&me&&p.owner_id===me.id)return J({data:JSON.parse(p.data),role:'owner',share:p.share});
-    if(p&&p.share&&s&&same(s,p.share))return J({data:JSON.parse(p.data),role:'viewer'});
-    return J({error:'not_found'},me?404:401);
+  // 초대 링크 미리보기 (로그인 불필요, 토큰을 아는 사람만)
+  r=path.match(/^\/api\/invites\/([a-z0-9]{24})(\/accept)?$/);
+  if(r){
+    const iv=await env.DB.prepare('SELECT i.plan_id,i.role,p.title,p.owner_id FROM plan_invites i JOIN plans p ON p.id=i.plan_id WHERE i.token=? AND (i.exp IS NULL OR i.exp>?)').bind(r[1],now()).first();
+    if(!iv)return J({error:'invite'},404);
+    if(!r[2]&&m==='GET')return J({title:iv.title,role:iv.role});
+    if(r[2]&&m==='POST'){
+      if(!me)return J({error:'auth'},401);
+      if(iv.owner_id===me.id)return J({id:iv.plan_id,role:'owner'});
+      const cur=await env.DB.prepare('SELECT role FROM plan_members WHERE plan_id=? AND user_id=?').bind(iv.plan_id,me.id).first();
+      if(!cur){
+        const c=await env.DB.prepare('SELECT COUNT(*) n FROM plan_members WHERE plan_id=?').bind(iv.plan_id).first();
+        if(c.n>=MAXMEMBERS)return J({error:'limit'},400);
+        await env.DB.prepare('INSERT INTO plan_members(plan_id,user_id,role,added) VALUES(?,?,?,?)').bind(iv.plan_id,me.id,iv.role,now()).run();
+        return J({id:iv.plan_id,role:iv.role});
+      }
+      if(cur.role==='viewer'&&iv.role==='editor')await env.DB.prepare('UPDATE plan_members SET role=? WHERE plan_id=? AND user_id=?').bind('editor',iv.plan_id,me.id).run();
+      return J({id:iv.plan_id,role:cur.role==='editor'?'editor':iv.role});
+    }
+    return J({error:'not_found'},404);
   }
 
-  if(!me)return J({error:'auth'},401);
+  r=path.match(/^\/api\/plans\/([^/]+)(?:\/(sharing|members|invites)(?:\/([^/]+))?)?$/);
+  const pid=r&&r[1],sub=r&&r[2],subid=r&&r[3];
+  if(r&&!ID.test(pid))return J({error:'not_found'},404);
+  const isPlanGet=r&&!sub&&m==='GET';
+  if(!me&&!isPlanGet)return J({error:'auth'},401);
 
-  if(path==='/api/me'&&m==='GET')return J({user:{name:me.name}});
-
-  if(path==='/api/plans'&&m==='GET'){
-    const {results}=await env.DB.prepare('SELECT id,title,sub,start,cover,tpl,updated FROM plans WHERE owner_id=? ORDER BY updated DESC').bind(me.id).all();
-    return J({plans:results});
-  }
+  if(path==='/api/me'&&m==='GET')return J({user:{id:me.id,name:me.name}});
 
   const check=d=>d&&typeof d==='object'&&!Array.isArray(d)&&Array.isArray(d.days)&&JSON.stringify(d).length<=MAX;
-  const sum=d=>[String(d.title||'').slice(0,200),String(d.sub||'').slice(0,200),String(d.start||'').slice(0,10),/^https?:\/\//.test(d.cover||'')?String(d.cover).slice(0,1000):'',Number.isInteger(+d.tpl)&&+d.tpl>=0&&+d.tpl<10?+d.tpl:0];
+  const sum=d=>[String(d.title||'').slice(0,200),String(d.sub||'').slice(0,200),String(d.start||'').slice(0,10),Number.isInteger(+d.tpl)&&+d.tpl>=0&&+d.tpl<10?+d.tpl:0];
 
+  if(path==='/api/plans'&&m==='GET'){
+    const mine=await env.DB.prepare('SELECT id,title,sub,start,tpl,updated,access FROM plans WHERE owner_id=? ORDER BY updated DESC').bind(me.id).all();
+    const shared=await env.DB.prepare('SELECT p.id,p.title,p.sub,p.start,p.tpl,p.updated,m.role FROM plan_members m JOIN plans p ON p.id=m.plan_id WHERE m.user_id=? ORDER BY p.updated DESC').bind(me.id).all();
+    return J({plans:mine.results,shared:shared.results});
+  }
   if(path==='/api/plans'&&m==='POST'){
-    let b;try{b=await req.json()}catch{return J({error:'bad'},400)}
+    const b=await body();if(!b)return J({error:'bad'},400);
     const d=b.data===undefined?{days:[]}:b.data;
     if(!check(d))return J({error:'data'},400);
+    clean(d);
     const c=await env.DB.prepare('SELECT COUNT(*) n FROM plans WHERE owner_id=?').bind(me.id).first();
     if(c.n>=MAXPLANS)return J({error:'limit'},400);
     const id=lid(12);
-    await env.DB.prepare('INSERT INTO plans(id,owner_id,data,title,sub,start,cover,tpl,updated) VALUES(?,?,?,?,?,?,?,?,?)').bind(id,me.id,JSON.stringify(d),...sum(d),now()).run();
+    await env.DB.prepare("INSERT INTO plans(id,owner_id,data,title,sub,start,cover,tpl,updated) VALUES(?,?,?,?,?,?,'',?,?)").bind(id,me.id,JSON.stringify(d),...sum(d),now()).run();
     return J({id},201);
   }
+  if(!r)return J({error:'not_found'},404);
 
-  if(r){
-    const p=await env.DB.prepare('SELECT owner_id,share FROM plans WHERE id=?').bind(pid).first();
-    if(!p||p.owner_id!==me.id)return J({error:'not_found'},404);   // 남의 플랜북은 존재 여부도 알려주지 않는다
-    if(!r[2]&&m==='PUT'){
-      let b;try{b=await req.json()}catch{return J({error:'bad'},400)}
-      if(!check(b.data))return J({error:'data'},400);
-      await env.DB.prepare('UPDATE plans SET data=?,title=?,sub=?,start=?,cover=?,tpl=?,updated=? WHERE id=?').bind(JSON.stringify(b.data),...sum(b.data),now(),pid).run();
+  // 이 플랜북에 대한 내 권한: owner > editor > viewer
+  const p=await env.DB.prepare('SELECT id,owner_id,data,access,share,rev FROM plans WHERE id=?').bind(pid).first();
+  const s=url.searchParams.get('s');
+  let role=null;
+  if(p){
+    if(me&&p.owner_id===me.id)role='owner';
+    else{
+      if(me){const mm=await env.DB.prepare('SELECT role FROM plan_members WHERE plan_id=? AND user_id=?').bind(pid,me.id).first();if(mm)role=mm.role}
+      if(s&&p.share&&p.access!=='private'&&same(s,p.share)){
+        const lr=(p.access==='edit'&&me)?'editor':'viewer';
+        if(role!=='editor')role=lr;
+      }
+    }
+  }
+  if(!role)return J({error:'not_found'},me?404:401);
+  const canEdit=role==='owner'||role==='editor';
+
+  if(!sub){
+    if(m==='GET'){
+      const out={data:JSON.parse(p.data),role,rev:p.rev};
+      if(role==='owner'){
+        out.access=p.access;out.share=p.share;
+        out.members=(await env.DB.prepare('SELECT m.user_id id,u.name,u.provider,m.role FROM plan_members m JOIN users u ON u.id=m.user_id WHERE m.plan_id=? ORDER BY m.added').bind(pid).all()).results;
+        out.invites=(await env.DB.prepare('SELECT token,role,exp FROM plan_invites WHERE plan_id=? AND (exp IS NULL OR exp>?) ORDER BY created').bind(pid,now()).all()).results;
+      }else if(role==='viewer'&&!me&&p.access==='edit')out.login_to_edit=true;
+      return J(out);
+    }
+    if(m==='PUT'){
+      if(!canEdit)return J({error:'forbidden'},403);
+      const b=await body();if(!b||!check(b.data))return J({error:'data'},400);
+      if(!Number.isInteger(b.rev))return J({error:'rev'},400);
+      clean(b.data);
+      const u=await env.DB.prepare('UPDATE plans SET data=?,title=?,sub=?,start=?,tpl=?,updated=?,rev=rev+1 WHERE id=? AND rev=?').bind(JSON.stringify(b.data),...sum(b.data),now(),pid,b.rev).run();
+      if(!u.meta.changes){const c=await env.DB.prepare('SELECT data,rev FROM plans WHERE id=?').bind(pid).first();return J({error:'conflict',rev:c.rev,data:JSON.parse(c.data)},409)}
+      return J({ok:true,rev:b.rev+1});
+    }
+    if(m==='DELETE'){if(role!=='owner')return J({error:'forbidden'},403);await env.DB.prepare('DELETE FROM plans WHERE id=?').bind(pid).run();return J({ok:true})}
+    return J({error:'not_found'},404);
+  }
+
+  // 공유 설정은 소유자만 (단, 구성원 본인의 "나가기"는 허용)
+  if(sub==='members'&&m==='DELETE'&&subid==='me'){
+    if(role==='owner')return J({error:'forbidden'},403);
+    await env.DB.prepare('DELETE FROM plan_members WHERE plan_id=? AND user_id=?').bind(pid,me.id).run();
+    return J({ok:true});
+  }
+  if(role!=='owner')return J({error:'forbidden'},403);
+
+  if(sub==='sharing'&&m==='PUT'){
+    const b=await body();if(!b||!['private','view','edit'].includes(b.access))return J({error:'data'},400);
+    let tk=p.share;
+    if((b.access!=='private'&&(!tk||p.access==='private'))||b.rotate)tk=lid(24);
+    await env.DB.prepare('UPDATE plans SET access=?,share=? WHERE id=?').bind(b.access,tk,pid).run();
+    return J({access:b.access,share:tk});
+  }
+  if(sub==='members'&&subid&&/^\d+$/.test(subid)){
+    if(m==='PUT'){
+      const b=await body();if(!b||!['viewer','editor'].includes(b.role))return J({error:'data'},400);
+      await env.DB.prepare('UPDATE plan_members SET role=? WHERE plan_id=? AND user_id=?').bind(b.role,pid,+subid).run();
       return J({ok:true});
     }
-    if(!r[2]&&m==='DELETE'){await env.DB.prepare('DELETE FROM plans WHERE id=?').bind(pid).run();return J({ok:true})}
-    if(r[2]&&m==='POST'){
-      let rot=false;try{rot=!!(await req.json()).rotate}catch{}
-      const s=(!p.share||rot)?lid(24):p.share;
-      await env.DB.prepare('UPDATE plans SET share=? WHERE id=?').bind(s,pid).run();
-      return J({share:s});
-    }
-    if(r[2]&&m==='DELETE'){await env.DB.prepare('UPDATE plans SET share=NULL WHERE id=?').bind(pid).run();return J({share:null})}
+    if(m==='DELETE'){await env.DB.prepare('DELETE FROM plan_members WHERE plan_id=? AND user_id=?').bind(pid,+subid).run();return J({ok:true})}
+  }
+  if(sub==='invites'&&!subid&&m==='POST'){
+    const b=await body();if(!b||!['viewer','editor'].includes(b.role)||![0,1,7,30].includes(b.days))return J({error:'data'},400);
+    const c=await env.DB.prepare('SELECT COUNT(*) n FROM plan_invites WHERE plan_id=? AND (exp IS NULL OR exp>?)').bind(pid,now()).first();
+    if(c.n>=MAXINVITES)return J({error:'limit'},400);
+    const tk=lid(24),exp=b.days?now()+b.days*86400:null;
+    await env.DB.prepare('INSERT INTO plan_invites(token,plan_id,role,exp,created) VALUES(?,?,?,?,?)').bind(tk,pid,b.role,exp,now()).run();
+    return J({token:tk,role:b.role,exp},201);
+  }
+  if(sub==='invites'&&subid&&TK.test(subid)&&m==='DELETE'){
+    await env.DB.prepare('DELETE FROM plan_invites WHERE token=? AND plan_id=?').bind(subid,pid).run();
+    return J({ok:true});
   }
   return J({error:'not_found'},404);
 }};

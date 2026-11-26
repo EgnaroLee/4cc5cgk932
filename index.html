@@ -2,6 +2,8 @@
 <html lang="ko"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="robots" content="noindex,nofollow">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' https://planbook-admin.sukzzang0907.workers.dev; worker-src 'self'; base-uri 'none'; form-action 'none'">
+<meta name="referrer" content="no-referrer">
 <title>귤율 여행 플랜북</title>
 <style>
 :root{--bg:#f3efe6;--card:#fffdf8;--ink:#1f2937;--mut:#6b7280;--line:#e2dccb;--acc:#c2410c;--navy:#12263f;--onacc:#fff;--warn:#b42318;--fh:Georgia,"Noto Serif KR",serif;--r:14px;color-scheme:light;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
@@ -37,19 +39,19 @@ h1{margin:0 0 4px;font-family:var(--fh);font-size:24px}.mut{color:var(--mut);fon
 .login .btns{display:grid;gap:10px;max-width:320px;margin:28px auto 0}
 .sb{display:block;padding:12px 14px;border-radius:10px;font-weight:700;text-decoration:none;border:1px solid var(--line)}
 .sb.g{background:#fff;color:#1f1f1f;border-color:#dadce0}.sb.k{background:#fee500;color:#191919;border-color:#fee500}
+.sec{font-size:15px;margin:26px 0 0;color:var(--mut)}
 .msg{margin-top:14px;color:var(--warn);font-size:13px}
 </style></head>
 <body><div id="app"></div>
 <script>
 const API='https://planbook-admin.sukzzang0907.workers.dev/',$=id=>document.getElementById(id);
 const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-const isU=u=>/^https?:\/\//.test(u||'');
 const LS={get:k=>{try{return localStorage.getItem(k)}catch{return null}},set:(k,v)=>{try{localStorage.setItem(k,v)}catch{}},del:k=>{try{localStorage.removeItem(k)}catch{}}};
 const DEF=['overview','map','glance','flights','hotels','days','tickets','transport','shop','prep','tips'];
 const blank=()=>({title:'',sub:'',kicker:'',code:'',start:'',airline:'',overview:'',tpl:0,cover:'',days:[],hotels:[],flights:[],tickets:[],shop:[],transport:[],check:[],tips:'',order:DEF.slice(),hide:[]});
 const TE=['✈️','🛫','🧳','🗼','🌊','🌴','🌃','⛰️','🏜️','📮'];
 const ERR={denied:'로그인이 취소되었습니다',token:'로그인에 실패했습니다. 다시 시도해 주세요',profile:'계정 정보를 가져오지 못했습니다',code:'로그인 코드가 만료되었습니다. 다시 시도해 주세요'};
-let T=LS.get('pb_token'),ui={name:LS.get('pb_name')||'',list:null,edit:false,msg:'',loading:true,offline:false};
+let T=LS.get('pb_token'),ui={name:LS.get('pb_name')||'',list:null,shared:[],edit:false,msg:'',loading:true,offline:false,invite:null};
 const api=async(p,o={})=>{
   const r=await fetch(API+p,{...o,headers:{...(o.body?{'Content-Type':'application/json'}:{}),...(T?{Authorization:'Bearer '+T}:{})}});
   const j=await r.json().catch(()=>({}));
@@ -59,38 +61,50 @@ const api=async(p,o={})=>{
 };
 const dday=s=>{if(!s)return '';const t=new Date();t.setHours(0,0,0,0);const n=Math.round((new Date(s+'T00:00:00')-t)/864e5);return isNaN(n)?'':n>0?'D-'+n:n===0?'D-DAY':''};
 const here=()=>location.origin+location.pathname;
-const card=p=>{
-  const t=Number.isInteger(+p.tpl)&&+p.tpl>=0&&+p.tpl<10?+p.tpl:0,bg=isU(p.cover)?` style="background-image:url('${esc(p.cover)}')"`:'';
-  const dd=dday(p.start);
-  return `<div class="pb" data-t="${t}"><a class="lk" href="plan.html?id=${esc(p.id)}"><div class="th"${bg}>${isU(p.cover)?'':TE[t]}</div><div class="in"><h2>${esc(p.title)||'제목 없는 플랜북'}</h2>${p.sub?`<p>${esc(p.sub)}</p>`:''}<span class="dt">${esc(p.start||'')}${dd?' · '+dd:''}</span></div></a>${ui.edit?`<div class="ed"><button class="dng" data-a="del" data-id="${esc(p.id)}">삭제</button></div>`:''}</div>`;
+const RL={viewer:'보기 전용',editor:'편집 가능'};
+const card=(p,shared)=>{
+  const t=Number.isInteger(+p.tpl)&&+p.tpl>=0&&+p.tpl<10?+p.tpl:0,dd=dday(p.start);
+  const badge=shared?` · <b>${RL[p.role]||''}</b>`:(p.access==='view'?' · 🔗 링크 공유':p.access==='edit'?' · ✏️ 링크 편집':'');
+  return `<div class="pb" data-t="${t}"><a class="lk" href="plan.html?id=${esc(p.id)}"><div class="th">${TE[t]}</div><div class="in"><h2>${esc(p.title)||'제목 없는 플랜북'}</h2>${p.sub?`<p>${esc(p.sub)}</p>`:''}<span class="dt">${esc(p.start||'')}${dd?' · '+dd:''}${badge}</span></div></a>${ui.edit?`<div class="ed"><button class="dng" data-a="${shared?'leave':'del'}" data-id="${esc(p.id)}">${shared?'나가기':'삭제'}</button></div>`:''}</div>`;
 };
 function render(){
   let bar,main;
   if(!T){
     bar='<div class="bar"><b>✈ PLANBOOK</b></div>';
     const q=encodeURIComponent(here());
-    main=`<main class="login"><h1>귤율 여행 플랜북</h1><div class="mut">로그인하면 내가 만든 플랜북이 모두 보입니다</div><div class="btns"><a class="sb g" href="${API}auth/google/start?return=${q}">Google로 계속하기</a><a class="sb k" href="${API}auth/kakao/start?return=${q}">카카오로 계속하기</a></div>${ui.msg?`<div class="msg">${esc(ui.msg)}</div>`:''}</main>`;
+    main=`<main class="login"><h1>귤율 여행 플랜북</h1>${ui.invite?`<div class="card" style="max-width:320px;margin:18px auto 0"><b>${esc(ui.invite.title)||'제목 없는 플랜북'}</b><div class="mut">플랜북에 초대되었습니다 · ${RL[ui.invite.role]}<br>로그인하면 바로 참여합니다</div></div>`:'<div class="mut">로그인하면 내가 만든 플랜북이 모두 보입니다</div>'}<div class="btns"><a class="sb g" href="${API}auth/google/start?return=${q}">Google로 계속하기</a><a class="sb k" href="${API}auth/kakao/start?return=${q}">카카오로 계속하기</a></div>${ui.msg?`<div class="msg">${esc(ui.msg)}</div>`:''}</main>`;
   }else{
     bar=`<div class="bar"><b>✈ PLANBOOK</b><span class="sub">${esc(ui.name)}</span><button class="${ui.edit?'pri':''}" data-a="edit">${ui.edit?'완료':'관리'}</button><button data-a="logout">로그아웃</button></div>`;
-    const L=ui.list;
-    main=`<main><h1>귤율 여행 플랜북</h1><div class="mut">${L?L.length+'개의 플랜북':''}${ui.offline?' · 오프라인 (마지막으로 본 목록)':''}</div><div class="list">${L?(L.length?L.map(card).join(''):'<div class="card mut">아직 플랜북이 없습니다. 아래 버튼으로 첫 플랜북을 만들어 보세요.</div>'):`<div class="card mut">${ui.loading?'불러오는 중…':'목록을 불러오지 못했습니다'}</div>`}</div><button class="add" data-a="new">＋ 새 플랜북</button>${ui.msg?`<div class="msg">${esc(ui.msg)}</div>`:''}</main>`;
+    const L=ui.list,SH=ui.shared||[];
+    main=`<main><h1>귤율 여행 플랜북</h1><div class="mut">${L?L.length+'개의 플랜북':''}${ui.offline?' · 오프라인 (마지막으로 본 목록)':''}</div><div class="list">${L?(L.length?L.map(x=>card(x,false)).join(''):'<div class="card mut">아직 플랜북이 없습니다. 아래 버튼으로 첫 플랜북을 만들어 보세요.</div>'):`<div class="card mut">${ui.loading?'불러오는 중…':'목록을 불러오지 못했습니다'}</div>`}</div><button class="add" data-a="new">＋ 새 플랜북</button>${SH.length?`<h2 class="sec">공유받은 플랜북</h2><div class="list">${SH.map(x=>card(x,true)).join('')}</div>`:''}${ui.msg?`<div class="msg">${esc(ui.msg)}</div>`:''}</main>`;
   }
   $('app').innerHTML=bar+main;
 }
 async function load(){
   if(!T){ui.loading=false;return render()}
-  try{const j=await api('api/plans');ui.list=j.plans;ui.offline=false;LS.set('pb_list',JSON.stringify(j.plans))}
-  catch(e){if(e.status!==401){try{ui.list=JSON.parse(LS.get('pb_list')||'null');ui.offline=!!ui.list}catch{}}}
+  try{const j=await api('api/plans');ui.list=j.plans;ui.shared=j.shared||[];ui.offline=false;LS.set('pb_list',JSON.stringify({plans:j.plans,shared:ui.shared}))}
+  catch(e){if(e.status!==401){try{const c=JSON.parse(LS.get('pb_list')||'null');if(c&&c.plans){ui.list=c.plans;ui.shared=c.shared||[];ui.offline=true}}catch{}}}
   ui.loading=false;render();
+}
+// 초대 링크: 로그인한 상태면 바로 수락, 아니면 로그인 후 이어서 처리
+async function joinPending(){
+  const tk=LS.get('pb_join');if(!tk||!/^[a-z0-9]{24}$/.test(tk))return LS.del('pb_join');
+  if(!T)return;
+  LS.del('pb_join');
+  try{const j=await api('api/invites/'+tk+'/accept',{method:'POST'});location.href='plan.html?id='+j.id;return true}
+  catch(e){ui.msg=e.message==='limit'?'이 플랜북은 더 이상 구성원을 받을 수 없습니다':'초대 링크가 만료되었거나 올바르지 않습니다'}
 }
 document.addEventListener('click',async e=>{
   const b=e.target.closest('[data-a]');if(!b)return;const a=b.dataset.a;ui.msg='';
   if(a==='edit'){ui.edit=!ui.edit;render()}
   else if(a==='logout'){try{await api('auth/logout',{method:'POST'})}catch{}T=null;['pb_token','pb_name','pb_list'].forEach(LS.del);ui={name:'',list:null,edit:false,msg:'',loading:false,offline:false};render()}
   else if(a==='new'){b.disabled=true;try{const j=await api('api/plans',{method:'POST',body:JSON.stringify({data:blank()})});location.href='plan.html?id='+j.id}catch(x){ui.msg=x.message==='limit'?'플랜북은 최대 50개까지 만들 수 있습니다':'만들지 못했습니다 ('+x.message+')';render()}}
-  else if(a==='del'){if(!confirm('이 플랜북을 삭제할까요? 되돌릴 수 없습니다.'))return;try{await api('api/plans/'+b.dataset.id,{method:'DELETE'});await load()}catch(x){ui.msg='삭제하지 못했습니다 ('+x.message+')';render()}}
+  else if(a==='leave'){if(!confirm('이 공유받은 플랜북에서 나갈까요? (내 목록에서만 사라집니다)'))return;try{await api('api/plans/'+b.dataset.id+'/members/me',{method:'DELETE'});await load()}catch(x){ui.msg='나가지 못했습니다 ('+x.message+')';render()}}
+  else if(a==='del'){if(!confirm('이 플랜북을 삭제할까요? 공유받은 사람도 더 이상 볼 수 없고, 되돌릴 수 없습니다.'))return;try{await api('api/plans/'+b.dataset.id,{method:'DELETE'});await load()}catch(x){ui.msg='삭제하지 못했습니다 ('+x.message+')';render()}}
 });
 (async()=>{
+  const qj=new URLSearchParams(location.search).get('join');
+  if(qj){LS.set('pb_join',qj);history.replaceState(null,'',location.pathname)}
   const h=new URLSearchParams(location.hash.slice(1));
   if(h.has('code')||h.has('error')){history.replaceState(null,'',location.pathname+location.search)}
   if(h.has('error'))ui.msg=ERR[h.get('error')]||'로그인에 실패했습니다';
@@ -98,8 +112,11 @@ document.addEventListener('click',async e=>{
     try{const j=await api('auth/exchange',{method:'POST',body:JSON.stringify({code:h.get('code')})});T=j.token;ui.name=j.user.name||'';LS.set('pb_token',T);LS.set('pb_name',ui.name)}
     catch(x){ui.msg=ERR.code}
   }
+  const pj=LS.get('pb_join');
+  if(pj&&!T){try{const r=await fetch(API+'api/invites/'+pj);if(r.ok)ui.invite=await r.json();else{LS.del('pb_join');ui.msg='초대 링크가 만료되었거나 올바르지 않습니다'}}catch{}}
   render();
   if('serviceWorker' in navigator)navigator.serviceWorker.register('sw.js').catch(()=>{});
+  if(T&&await joinPending())return;
   load();
 })();
 </script></body></html>
