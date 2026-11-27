@@ -5,6 +5,9 @@ compatibility_date = "2026-11-01"
 [vars]
 # 사이트 origin (경로 없이). 저장소 이름을 바꾼 뒤에도 origin은 같다.
 ALLOW_ORIGIN = "https://egnarolee.github.io"
+# 임시 호환 스위치: 새 사이트(로그인 검증값을 보내는 버전)가 배포되기 전/중에도 옛 사이트가 로그인되도록 허용.
+# 새 사이트가 올라간 것을 확인한 뒤 이 줄을 지우고 다시 배포하세요. (켜 둔 동안에는 로그인 코드 가로채기 방어가 약해집니다)
+LEGACY_LOGIN = "1"
 
 [[d1_databases]]
 binding = "DB"

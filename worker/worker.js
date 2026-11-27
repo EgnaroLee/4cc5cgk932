@@ -54,7 +54,8 @@ export default{async fetch(req,env){
       if(!okReturn(env,ret))return J({error:'return'},400);
       if(await limited(env.LOGIN_RL,'ip:'+ip))return go(ret+'#error=rate');
       const cc=url.searchParams.get('cc')||'';
-      if(!/^[A-Za-z0-9_-]{43}$/.test(cc))return J({error:'cc'},400);
+      const legacy=env.LEGACY_LOGIN==='1';   // 임시 호환: 검증값 없는 옛 사이트 허용 (wrangler.toml 참고)
+      if(!/^[A-Za-z0-9_-]{43}$/.test(cc)&&!(legacy&&cc===''))return J({error:'cc'},400);
       const n=tok(16),p=b64u(enc.encode(JSON.stringify({n,e:now()+600,r:ret,c:cc})));
       const state=p+'.'+await hmac(env.SESSION_SECRET,p);
       const q=new URLSearchParams({client_id:P.key(env),redirect_uri:redirect,response_type:'code',scope:P.scope,state});
@@ -66,7 +67,7 @@ export default{async fetch(req,env){
     if(!p||!sig||!same(sig,await hmac(env.SESSION_SECRET||'',p)))return J({error:'state'},400);
     let st;try{st=JSON.parse(dec.decode(unb64u(p)))}catch{return J({error:'state'},400)}
     const ck=(req.headers.get('Cookie')||'').match(/(?:^|;\s*)pb_n=([^;]+)/);
-    if(st.e<now()||!ck||!same(ck[1],st.n)||!okReturn(env,st.r)||!/^[A-Za-z0-9_-]{43}$/.test(st.c||''))return J({error:'state'},400);
+    if(st.e<now()||!ck||!same(ck[1],st.n)||!okReturn(env,st.r)||!(/^[A-Za-z0-9_-]{43}$/.test(st.c||'')||(env.LEGACY_LOGIN==='1'&&!st.c)))return J({error:'state'},400);
     const clr={'Set-Cookie':'pb_n=; Max-Age=0; Path=/auth; HttpOnly; Secure; SameSite=Lax'};
     const fail=(c,d)=>go(st.r+'#error='+c+(d?'&d='+encodeURIComponent(d):''),clr);
     const code=url.searchParams.get('code');
@@ -119,15 +120,18 @@ export default{async fetch(req,env){
       await env.DB.prepare('UPDATE oauth_codes SET user_id=? WHERE hash=?').bind(uid,ch).run();
     }
     const c=tok(24);
-    await env.DB.prepare('INSERT INTO logins(hash,user_id,exp,cc) VALUES(?,?,?,?)').bind(await sha(c),uid,now()+60,st.c).run();
+    await env.DB.prepare('INSERT INTO logins(hash,user_id,exp,cc) VALUES(?,?,?,?)').bind(await sha(c),uid,now()+60,st.c||null).run();
     return go(st.r+'#code='+c,clr);
   }
 
   if(path==='/auth/exchange'&&m==='POST'){
     let b;try{b=await req.json()}catch{return J({error:'bad'},400)}
-    if(typeof b.code!=='string'||b.code.length>100||typeof b.cv!=='string'||!/^[A-Za-z0-9_-]{20,100}$/.test(b.cv))return J({error:'code'},400);
+    const oldClient=env.LEGACY_LOGIN==='1'&&b.cv===undefined;   // 임시 호환: 검증값 없이 교환하는 옛 사이트
+    if(typeof b.code!=='string'||b.code.length>100||(!oldClient&&(typeof b.cv!=='string'||!/^[A-Za-z0-9_-]{20,100}$/.test(b.cv))))return J({error:'code'},400);
     await env.DB.batch([env.DB.prepare('DELETE FROM logins WHERE exp<?').bind(now()),env.DB.prepare('DELETE FROM sessions WHERE exp<?').bind(now())]);
-    const l=await env.DB.prepare('DELETE FROM logins WHERE hash=? AND exp>=? AND cc=? RETURNING user_id').bind(await sha(b.code),now(),await sha(b.cv)).first();
+    const l=oldClient
+      ?await env.DB.prepare('DELETE FROM logins WHERE hash=? AND exp>=? AND cc IS NULL RETURNING user_id').bind(await sha(b.code),now()).first()
+      :await env.DB.prepare('DELETE FROM logins WHERE hash=? AND exp>=? AND cc=? RETURNING user_id').bind(await sha(b.code),now(),await sha(b.cv)).first();
     if(!l)return J({error:'code'},401);
     const t=tok(32);
     await env.DB.prepare('INSERT INTO sessions(hash,user_id,exp) VALUES(?,?,?)').bind(await sha(t),l.user_id,now()+SESSION_DAYS*86400).run();
