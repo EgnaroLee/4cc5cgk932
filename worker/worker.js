@@ -1,4 +1,4 @@
-// Cloudflare Worker: 소셜 로그인(Google/Kakao) + 사용자별 플랜북 저장(D1) + 공유(링크/초대/구성원)
+// Cloudflare Worker: 소셜 로그인(Google/Kakao) + 계정 연결 + 사용자별 플랜북 저장(D1) + 공유(링크/초대/구성원)
 // Bindings : DB (D1)
 // Vars     : ALLOW_ORIGIN (사이트 origin, 쉼표로 여러 개 가능. 예: https://egnarolee.github.io)
 // Secrets  : SESSION_SECRET, GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, KAKAO_REST_KEY, (선택) KAKAO_CLIENT_SECRET
@@ -13,6 +13,11 @@ const hmac=async(k,s)=>{const key=await crypto.subtle.importKey('raw',enc.encode
 const same=(a,b)=>{a=String(a||'');b=String(b||'');let d=a.length^b.length;for(let i=0;i<Math.max(a.length,b.length);i++)d|=(a.charCodeAt(i)||0)^(b.charCodeAt(i)||0);return d===0};
 const ID=/^[a-z0-9]{12}$/,TK=/^[a-z0-9]{24}$/,MAX=300000,MAXPLANS=50,MAXMEMBERS=20,MAXINVITES=10,SESSION_DAYS=30;
 const now=()=>Math.floor(Date.now()/1000);
+const sleep=ms=>new Promise(r=>setTimeout(r,ms));
+// 구글·카카오 서버 호출은 8초 안에 끝나지 않으면 포기한다 (무한 로딩 방지)
+const pf=(u,o={})=>fetch(u,{...o,signal:AbortSignal.timeout(8000)});
+// 제공자가 돌려준 오류 코드만 화면에 알려 준다 (인가 코드 등이 들어 있는 설명문은 제외)
+const ecode=j=>String((j&&(j.error_code||j.code||j.error))||'').replace(/[^A-Za-z0-9_-]/g,'').slice(0,24);
 // 외부 이미지는 받지 않고, 링크는 https 만 허용한다
 const cleanUrl=u=>{const t=String(u||'');if(!t||t.length>500)return '';try{const x=new URL(t);return x.protocol==='https:'?x.href:''}catch{return ''}};
 const clean=d=>{d.cover='';(d.days||[]).forEach(x=>{if(x&&typeof x==='object')delete x.img});if(Array.isArray(d.tickets))d.tickets.forEach(t=>{if(t&&typeof t==='object')t.url=cleanUrl(t.url)});return d};
@@ -34,6 +39,10 @@ export default{async fetch(req,env){
   const J=(o,s=200,h={})=>new Response(JSON.stringify(o),{status:s,headers:{...cors,...h,'Content-Type':'application/json'}});
   const go=(to,h={})=>new Response(null,{status:302,headers:{Location:to,...h}});
   if(m==='OPTIONS')return new Response(null,{headers:cors});
+  // 호출 횟수 제한: 로그인 시작(IP별), 데이터 변경(계정별) 각각 60초에 4번 (wrangler.toml 의 ratelimits)
+  const ip=req.headers.get('CF-Connecting-IP')||'unknown';
+  const limited=async(rl,key)=>{if(!rl)return false;try{return !(await rl.limit({key})).success}catch{return false}};
+  const tooMany=()=>J({error:'rate'},429,{'Retry-After':'60'});
 
   // ───────── 소셜 로그인 ─────────
   let r=path.match(/^\/auth\/(google|kakao)\/(start|callback)$/);
@@ -43,9 +52,14 @@ export default{async fetch(req,env){
       const ret=url.searchParams.get('return');
       if(!P.key(env)||!env.SESSION_SECRET)return J({error:'not_configured'},503);
       if(!okReturn(env,ret))return J({error:'return'},400);
-      const n=tok(16),p=b64u(enc.encode(JSON.stringify({n,e:now()+600,r:ret})));
+      if(await limited(env.LOGIN_RL,'ip:'+ip))return go(ret+'#error=rate');
+      const cc=url.searchParams.get('cc')||'';
+      const legacy=env.LEGACY_LOGIN==='1';   // 임시 호환: 검증값 없는 옛 사이트 허용 (wrangler.toml 참고)
+      if(!/^[A-Za-z0-9_-]{43}$/.test(cc)&&!(legacy&&cc===''))return J({error:'cc'},400);
+      const n=tok(16),p=b64u(enc.encode(JSON.stringify({n,e:now()+600,r:ret,c:cc})));
       const state=p+'.'+await hmac(env.SESSION_SECRET,p);
       const q=new URLSearchParams({client_id:P.key(env),redirect_uri:redirect,response_type:'code',scope:P.scope,state});
+      if(r[1]==='kakao'&&url.searchParams.get('acct')==='1')q.set('through_account','true');   // 카카오톡 앱 대신 카카오계정 로그인 화면으로
       return go(P.auth+'?'+q,{'Set-Cookie':`pb_n=${n}; Max-Age=600; Path=/auth; HttpOnly; Secure; SameSite=Lax`});
     }
     // callback
@@ -53,32 +67,71 @@ export default{async fetch(req,env){
     if(!p||!sig||!same(sig,await hmac(env.SESSION_SECRET||'',p)))return J({error:'state'},400);
     let st;try{st=JSON.parse(dec.decode(unb64u(p)))}catch{return J({error:'state'},400)}
     const ck=(req.headers.get('Cookie')||'').match(/(?:^|;\s*)pb_n=([^;]+)/);
-    if(st.e<now()||!ck||!same(ck[1],st.n)||!okReturn(env,st.r))return J({error:'state'},400);
+    if(st.e<now()||!ck||!same(ck[1],st.n)||!okReturn(env,st.r)||!(/^[A-Za-z0-9_-]{43}$/.test(st.c||'')||(env.LEGACY_LOGIN==='1'&&!st.c)))return J({error:'state'},400);
     const clr={'Set-Cookie':'pb_n=; Max-Age=0; Path=/auth; HttpOnly; Secure; SameSite=Lax'};
-    const fail=c=>go(st.r+'#error='+c,clr);
+    const fail=(c,d)=>go(st.r+'#error='+c+(d?'&d='+encodeURIComponent(d):''),clr);
     const code=url.searchParams.get('code');
     if(!code)return fail('denied');
-    const body=new URLSearchParams({grant_type:'authorization_code',code,redirect_uri:redirect,client_id:P.key(env)});
-    if(P.secret(env))body.set('client_secret',P.secret(env));
-    const tr=await fetch(P.token,{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body});
-    const tj=await tr.json().catch(()=>({}));
-    if(!tr.ok||!tj.access_token)return fail('token');
-    const ur=await fetch(P.me,{headers:{Authorization:'Bearer '+tj.access_token}});
-    if(!ur.ok)return fail('profile');
-    const u=P.user(await ur.json().catch(()=>({})));
-    if(!u.pid)return fail('profile');
-    const row=await env.DB.prepare('INSERT INTO users(provider,pid,name,created) VALUES(?,?,?,?) ON CONFLICT(provider,pid) DO UPDATE SET name=CASE WHEN length(excluded.name)>0 THEN excluded.name ELSE users.name END RETURNING id')
-      .bind(r[1],u.pid,String(u.name||'').slice(0,60),now()).first();
+
+    // 제공자 서버와 통신해 계정을 찾거나 만든다. 실패하면 {err,d}, 성공하면 {uid}
+    const exchange=async()=>{
+      const body=new URLSearchParams({grant_type:'authorization_code',code,redirect_uri:redirect,client_id:P.key(env)});
+      if(P.secret(env))body.set('client_secret',P.secret(env));
+      let tr,tj,ur,uj;
+      try{tr=await pf(P.token,{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body});tj=await tr.json().catch(()=>({}))}
+      catch(e){console.log('provider token fetch failed',r[1],e&&e.name);return {err:e&&e.name==='TimeoutError'?'timeout':'network'}}
+      if(!tr.ok||!tj.access_token){console.log('provider token error',r[1],tr.status,ecode(tj));return {err:'token',d:ecode(tj)||('H'+tr.status)}}
+      try{ur=await pf(P.me,{headers:{Authorization:'Bearer '+tj.access_token}});uj=await ur.json().catch(()=>({}))}
+      catch(e){console.log('provider profile fetch failed',r[1],e&&e.name);return {err:e&&e.name==='TimeoutError'?'timeout':'network'}}
+      if(!ur.ok){console.log('provider profile error',r[1],ur.status,ecode(uj));return {err:'profile',d:ecode(uj)||('H'+ur.status)}}
+      const u=P.user(uj);if(!u.pid)return {err:'profile',d:'nopid'};
+      const nm=String(u.name||'').slice(0,60);
+      let idn=await env.DB.prepare('SELECT id,user_id FROM identities WHERE provider=? AND pid=?').bind(r[1],u.pid).first();
+      if(!idn){
+        const nu=await env.DB.prepare("INSERT INTO users(provider,pid,name,created) VALUES('acct',?,?,?) RETURNING id").bind(lid(16),nm,now()).first();
+        try{await env.DB.prepare('INSERT INTO identities(provider,pid,user_id,name,created) VALUES(?,?,?,?,?)').bind(r[1],u.pid,nu.id,nm,now()).run()}
+        catch{await env.DB.prepare('DELETE FROM users WHERE id=?').bind(nu.id).run()}   // 동시에 처음 로그인한 경우
+        idn=await env.DB.prepare('SELECT id,user_id FROM identities WHERE provider=? AND pid=?').bind(r[1],u.pid).first();
+        if(!idn)return {err:'profile',d:'identity'};
+      }else if(nm){
+        await env.DB.batch([env.DB.prepare('UPDATE identities SET name=? WHERE id=?').bind(nm,idn.id),env.DB.prepare("UPDATE users SET name=? WHERE id=? AND name=''").bind(nm,idn.user_id)]);
+      }
+      return {uid:idn.user_id};
+    };
+
+    // 같은 인가 코드로 콜백이 두 번 불려도(카카오톡 앱 전환 등) 한 번만 처리하고, 두 번째는 같은 결과를 이어 받는다.
+    // 인가 코드는 제공자가 한 번만 받아 주므로, 이렇게 하지 않으면 한쪽이 "코드 재사용"으로 실패한다.
+    await env.DB.prepare('DELETE FROM oauth_codes WHERE exp<?').bind(now()).run();
+    const ch=await sha(r[1]+':'+code);
+    const claim=await env.DB.prepare('INSERT OR IGNORE INTO oauth_codes(hash,user_id,exp) VALUES(?,NULL,?)').bind(ch,now()+120).run();
+    let uid=null;
+    if(!claim.meta.changes){
+      for(let i=0;i<20&&!uid;i++){
+        const row=await env.DB.prepare('SELECT user_id FROM oauth_codes WHERE hash=?').bind(ch).first();
+        if(!row)break;                                   // 먼저 처리하던 쪽이 실패해서 지워짐
+        if(row.user_id)uid=row.user_id;else await sleep(400);
+      }
+      if(!uid)return fail('token','duplicate');
+    }else{
+      let x;
+      try{x=await exchange()}catch(e){console.log('callback error',r[1],e&&e.name);x={err:'server',d:String(e&&e.name||'').replace(/[^A-Za-z0-9_-]/g,'').slice(0,24)}}
+      if(x.err){await env.DB.prepare('DELETE FROM oauth_codes WHERE hash=?').bind(ch).run().catch(()=>{});return fail(x.err,x.d)}
+      uid=x.uid;
+      await env.DB.prepare('UPDATE oauth_codes SET user_id=? WHERE hash=?').bind(uid,ch).run();
+    }
     const c=tok(24);
-    await env.DB.prepare('INSERT INTO logins(hash,user_id,exp) VALUES(?,?,?)').bind(await sha(c),row.id,now()+60).run();
+    await env.DB.prepare('INSERT INTO logins(hash,user_id,exp,cc) VALUES(?,?,?,?)').bind(await sha(c),uid,now()+60,st.c||null).run();
     return go(st.r+'#code='+c,clr);
   }
 
   if(path==='/auth/exchange'&&m==='POST'){
     let b;try{b=await req.json()}catch{return J({error:'bad'},400)}
-    if(typeof b.code!=='string'||b.code.length>100)return J({error:'code'},400);
+    const oldClient=env.LEGACY_LOGIN==='1'&&b.cv===undefined;   // 임시 호환: 검증값 없이 교환하는 옛 사이트
+    if(typeof b.code!=='string'||b.code.length>100||(!oldClient&&(typeof b.cv!=='string'||!/^[A-Za-z0-9_-]{20,100}$/.test(b.cv))))return J({error:'code'},400);
     await env.DB.batch([env.DB.prepare('DELETE FROM logins WHERE exp<?').bind(now()),env.DB.prepare('DELETE FROM sessions WHERE exp<?').bind(now())]);
-    const l=await env.DB.prepare('DELETE FROM logins WHERE hash=? AND exp>=? RETURNING user_id').bind(await sha(b.code),now()).first();
+    const l=oldClient
+      ?await env.DB.prepare('DELETE FROM logins WHERE hash=? AND exp>=? AND cc IS NULL RETURNING user_id').bind(await sha(b.code),now()).first()
+      :await env.DB.prepare('DELETE FROM logins WHERE hash=? AND exp>=? AND cc=? RETURNING user_id').bind(await sha(b.code),now(),await sha(b.cv)).first();
     if(!l)return J({error:'code'},401);
     const t=tok(32);
     await env.DB.prepare('INSERT INTO sessions(hash,user_id,exp) VALUES(?,?,?)').bind(await sha(t),l.user_id,now()+SESSION_DAYS*86400).run();
@@ -90,6 +143,8 @@ export default{async fetch(req,env){
   const bearer=(req.headers.get('Authorization')||'').replace(/^Bearer /,'');
   const me=bearer?await env.DB.prepare('SELECT u.id,u.name FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.hash=? AND s.exp>?').bind(await sha(bearer),now()).first():null;
   const body=async()=>{try{return await req.json()}catch{return null}};
+  // 데이터를 바꾸는 요청(저장·생성·삭제·공유·초대·계정 연결 등)은 계정별로 제한. 조회와 로그아웃, 연결 미리보기는 제외
+  if(me&&m!=='GET'&&path.startsWith('/api/')&&path!=='/api/link/preview'&&await limited(env.EDIT_RL,'u:'+me.id))return tooMany();
 
   if(path==='/auth/logout'&&m==='POST'){if(bearer)await env.DB.prepare('DELETE FROM sessions WHERE hash=?').bind(await sha(bearer)).run();return J({ok:true})}
 
@@ -121,7 +176,61 @@ export default{async fetch(req,env){
   const isPlanGet=r&&!sub&&m==='GET';
   if(!me&&!isPlanGet)return J({error:'auth'},401);
 
-  if(path==='/api/me'&&m==='GET')return J({user:{id:me.id,name:me.name}});
+  if(path==='/api/me'&&m==='GET'){
+    const ids=(await env.DB.prepare('SELECT id,provider,name FROM identities WHERE user_id=? ORDER BY id').bind(me.id).all()).results;
+    return J({user:{id:me.id,name:me.name},identities:ids});
+  }
+  if(path==='/api/me'&&m==='DELETE'){
+    const b=await body();if(!b||b.confirm!==true)return J({error:'confirm'},400);
+    const own="(SELECT id FROM plans WHERE owner_id=?)",q=(x,...a)=>env.DB.prepare(x).bind(...a);
+    await env.DB.batch([
+      q('DELETE FROM plan_members WHERE plan_id IN '+own,me.id),q('DELETE FROM plan_invites WHERE plan_id IN '+own,me.id),
+      q('DELETE FROM plans WHERE owner_id=?',me.id),q('DELETE FROM plan_members WHERE user_id=?',me.id),
+      q('DELETE FROM sessions WHERE user_id=?',me.id),q('DELETE FROM logins WHERE user_id=?',me.id),
+      q('DELETE FROM identities WHERE user_id=?',me.id),q('DELETE FROM users WHERE id=?',me.id)]);
+    return J({ok:true});
+  }
+  const ri=path.match(/^\/api\/identities\/(\d+)$/);
+  if(ri&&m==='DELETE'){
+    const c=await env.DB.prepare('SELECT COUNT(*) n FROM identities WHERE user_id=?').bind(me.id).first();
+    if(c.n<2)return J({error:'last'},400);                       // 마지막 로그인 수단은 해제할 수 없다
+    const d=await env.DB.prepare('DELETE FROM identities WHERE id=? AND user_id=?').bind(+ri[1],me.id).run();
+    return d.meta.changes?J({ok:true}):J({error:'not_found'},404);
+  }
+  // 계정 연결: 소셜 로그인으로 받은 1회용 코드를 "지금 로그인한 계정"에 붙인다 (코드를 요청한 브라우저 + 로그인 상태 둘 다 필요)
+  if((path==='/api/link/preview'||path==='/api/link')&&m==='POST'){
+    const b=await body();if(!b||typeof b.code!=='string'||typeof b.cv!=='string'||!/^[A-Za-z0-9_-]{20,100}$/.test(b.cv))return J({error:'bad'},400);
+    const hc=await sha(b.code),hv=await sha(b.cv);
+    const l=await env.DB.prepare('SELECT user_id FROM logins WHERE hash=? AND exp>? AND cc=?').bind(hc,now(),hv).first();
+    if(!l)return J({error:'code'},401);
+    const U=l.user_id,T=me.id;
+    const st=U===T?null:{
+      plans:(await env.DB.prepare('SELECT COUNT(*) n FROM plans WHERE owner_id=?').bind(U).first()).n,
+      shared:(await env.DB.prepare('SELECT COUNT(*) n FROM plan_members WHERE user_id=?').bind(U).first()).n,
+      mine:(await env.DB.prepare('SELECT COUNT(*) n FROM plans WHERE owner_id=?').bind(T).first()).n,
+      provider:(await env.DB.prepare('SELECT provider FROM identities WHERE user_id=? ORDER BY id').bind(U).all()).results.map(x=>x.provider)};
+    if(path==='/api/link/preview'){
+      await env.DB.prepare('UPDATE logins SET exp=? WHERE hash=? AND exp<?').bind(now()+600,hc,now()+600).run();   // 확인하는 동안 코드가 만료되지 않게
+      return J(U===T?{same:true}:{same:false,plans:st.plans,shared:st.shared,providers:st.provider});
+    }
+    if(U===T){await env.DB.prepare('DELETE FROM logins WHERE hash=?').bind(hc).run();return J({ok:true,merged:false})}
+    const empty=st.plans===0&&st.shared===0;
+    if(!empty&&b.merge!==true)return J({error:'merge_required',plans:st.plans,shared:st.shared},409);
+    if(st.mine+st.plans>MAXPLANS)return J({error:'limit'},400);
+    const del=await env.DB.prepare('DELETE FROM logins WHERE hash=? AND exp>? AND cc=?').bind(hc,now(),hv).run();
+    if(!del.meta.changes)return J({error:'code'},401);
+    const q=(x,...a)=>env.DB.prepare(x).bind(...a);
+    await env.DB.batch([
+      q('UPDATE identities SET user_id=? WHERE user_id=?',T,U),
+      q('UPDATE plans SET owner_id=? WHERE owner_id=?',T,U),
+      q('DELETE FROM plan_members WHERE user_id=? AND plan_id IN (SELECT plan_id FROM plan_members WHERE user_id=?)',U,T),
+      q('UPDATE plan_members SET user_id=? WHERE user_id=?',T,U),
+      q('DELETE FROM plan_members WHERE user_id=? AND plan_id IN (SELECT id FROM plans WHERE owner_id=?)',T,T),
+      q('DELETE FROM sessions WHERE user_id=?',U),q('DELETE FROM logins WHERE user_id=?',U),
+      q("UPDATE users SET name=(SELECT name FROM users WHERE id=?) WHERE id=? AND name=''",U,T),
+      q('DELETE FROM users WHERE id=?',U)]);
+    return J({ok:true,merged:!empty});
+  }
 
   const check=d=>d&&typeof d==='object'&&!Array.isArray(d)&&Array.isArray(d.days)&&JSON.stringify(d).length<=MAX;
   const sum=d=>[String(d.title||'').slice(0,200),String(d.sub||'').slice(0,200),String(d.start||'').slice(0,10),Number.isInteger(+d.tpl)&&+d.tpl>=0&&+d.tpl<10?+d.tpl:0];

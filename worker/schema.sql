@@ -13,11 +13,22 @@ CREATE TABLE IF NOT EXISTS sessions(
   user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   exp INTEGER NOT NULL
 );
-CREATE TABLE IF NOT EXISTS logins(      -- 소셜 로그인 직후 1회용 코드 (60초)
+CREATE TABLE IF NOT EXISTS logins(      -- 소셜 로그인 직후 1회용 코드 (60초, 요청한 브라우저만 사용 가능)
   hash TEXT PRIMARY KEY,
   user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-  exp INTEGER NOT NULL
+  exp INTEGER NOT NULL,
+  cc TEXT                               -- 코드 검증값 (브라우저가 가진 비밀의 해시)
 );
+CREATE TABLE IF NOT EXISTS identities(  -- 계정에 연결된 로그인 수단 (한 계정에 여러 개)
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  provider TEXT NOT NULL,
+  pid TEXT NOT NULL,
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  name TEXT NOT NULL DEFAULT '',
+  created INTEGER NOT NULL,
+  UNIQUE(provider,pid)
+);
+CREATE INDEX IF NOT EXISTS identities_user ON identities(user_id);
 CREATE TABLE IF NOT EXISTS plans(
   id TEXT PRIMARY KEY,                  -- [a-z0-9]{12}
   owner_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
@@ -49,3 +60,8 @@ CREATE TABLE IF NOT EXISTS plan_invites(  -- 초대 링크
   created INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS invites_plan ON plan_invites(plan_id);
+CREATE TABLE IF NOT EXISTS oauth_codes(  -- 제공자 인가 코드 처리 기록 (콜백이 두 번 불려도 한 번만 처리, 120초)
+  hash TEXT PRIMARY KEY,
+  user_id INTEGER,
+  exp INTEGER NOT NULL
+);

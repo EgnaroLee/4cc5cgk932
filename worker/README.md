@@ -57,14 +57,60 @@ npx wrangler deploy
 이전(비밀번호 + GitHub 커밋) 방식에서 쓰던 `ADMIN_PASSWORD`, `GITHUB_TOKEN` 시크릿과 `OWNER`, `REPO` 변수는 더 이상 쓰지 않습니다.
 Cloudflare 대시보드에서 삭제하고, GitHub 의 Personal access token 도 폐기하세요.
 
-## 6. 이미 운영 중인 DB 를 공유 기능으로 올릴 때
+## 6. 이미 운영 중인 DB 를 새 기능으로 올릴 때
 
-`migrations/002_sharing.sql` 을 **한 번만** 실행합니다. (새로 설치하는 경우는 `schema.sql` 에 이미 포함)
-기존 DB 에서 링크 공유 중이던 플랜북은 자동으로 "링크로 보기"가 됩니다. 이 변경은 이전 Worker 코드와도 호환되므로 Worker 배포보다 먼저 실행해도 됩니다.
+`migrations/` 의 파일을 번호 순서대로, 각각 **한 번만** 실행합니다. (새로 설치하는 경우는 `schema.sql` 에 모두 포함되어 있음)
 
 ```bash
-npx wrangler d1 execute planbook --remote --file=migrations/002_sharing.sql
+npx wrangler d1 execute planbook --remote --file=migrations/002_sharing.sql   # 공유 범위 (이미 실행했다면 건너뜀)
+npx wrangler d1 execute planbook --remote --file=migrations/003_accounts.sql  # 계정 연결 (로그인 수단 분리)
+npx wrangler d1 execute planbook --remote --file=migrations/004_oauth_codes.sql  # 로그인 콜백 중복 처리 방지
 ```
+
+> **배포 순서**: 003 → Worker 코드 교체(Deploy) → 사이트(PR 병합). 새 로그인 방식은 사이트와 Worker 가 함께 바뀌어야 하므로 Worker 교체와 PR 병합은 가까운 시간에 하세요.
+> 003 을 실행하면 진행 중이던 로그인 코드(60초짜리)가 모두 지워집니다. 그 순간 로그인하던 사람은 다시 시도해야 합니다.
+
+## 계정 연결
+
+- 한 계정에 여러 로그인 수단(Google, 카카오)을 연결할 수 있습니다. `users` 가 계정, `identities` 가 로그인 수단입니다.
+- 로그인한 상태에서 **계정 → 연결**을 누르고 다른 서비스로 로그인하면 그 수단이 현재 계정에 붙습니다.
+- 연결하려는 수단이 이미 **데이터가 있는 다른 계정**에 속해 있으면 "합치기" 확인을 거칩니다. 합치면 상대 계정의 플랜북·공유받은 플랜북·로그인 수단이 현재 계정으로 옮겨지고 상대 계정은 삭제됩니다(되돌릴 수 없음). 합친 뒤 플랜북이 50개를 넘으면 거절됩니다.
+- 마지막 로그인 수단은 해제할 수 없습니다.
+- **로그인 코드 검증**: 로그인을 시작할 때 브라우저가 만든 비밀의 해시(`cc`)를 보내고, 1회용 코드는 그 비밀(`cv`)을 가진 브라우저만 교환·연결에 쓸 수 있습니다. 남이 만든 로그인 코드를 내 브라우저에 심는 공격(로그인 CSRF)과 코드 가로채기를 막습니다.
+- 계정 삭제(`DELETE /api/me`)는 계정, 플랜북, 공유·초대, 구성원 관계, 세션, 로그인 수단을 모두 지웁니다.
+
+## 호출 횟수 제한
+
+`wrangler.toml` 의 `ratelimits` 로 **60초에 4번**씩 제한합니다. (`wrangler deploy` 로 배포할 때 적용되며, 대시보드에서 코드를 붙여 넣는 방식으로는 설정되지 않습니다.)
+
+| 이름 | 대상 | 기준 | 넘으면 |
+| --- | --- | --- | --- |
+| `LOGIN_RL` | 로그인 시작 (`/auth/{google,kakao}/start`) | 접속 IP | 사이트로 돌려보내며 "로그인 시도가 너무 많습니다" 안내 |
+| `EDIT_RL` | 데이터를 바꾸는 요청 (`/api/…` 의 POST·PUT·DELETE: 저장, 생성, 삭제, 공유·초대·구성원, 계정 연결·삭제) | 계정 | `429` + "요청이 너무 많습니다. 1분 뒤에 다시 시도해 주세요" |
+
+- 조회(GET), 로그아웃, 계정 연결 미리보기는 제한하지 않습니다.
+- 횟수를 바꾸려면 `limit` 을 고치고 다시 배포하세요. `period` 는 10 또는 60 만 쓸 수 있습니다.
+- Cloudflare 의 이 기능은 서버 지역별로 따로 세기 때문에 정확한 한도가 아니라 "대략 막는 안전망"입니다.
+- 설정이 없거나 제한 장치에 오류가 나도 서비스는 막지 않고 통과시킵니다.
+
+## 카카오 로그인이 휴대폰에서 실패할 때
+
+| 증상 | 원인 | 대응 |
+| --- | --- | --- |
+| "카카오톡으로 로그인할 수 없습니다" 화면, 오래 로딩 | 카카오 로그인 페이지가 휴대폰의 카카오톡 앱을 불러오지 못함 (카카오 쪽) | 로그인 화면의 "카카오계정(아이디·비밀번호)으로 로그인" 링크 (`acct=1` → 카카오 `through_account=true`) |
+| 로그인했는데 "로그인에 실패했습니다" | 카카오톡 앱 전환 때 같은 인가 코드로 콜백이 두 번 불리거나, 결과가 다른 탭으로 도착 | 콜백을 코드 단위로 한 번만 처리(`oauth_codes`), 로그인 검증값을 `localStorage` 에 두고, 다른 탭에서 방금 성공한 로그인은 이어서 사용 |
+| 그 밖의 실패 | 카카오 설정 오류 등 | 실패 화면에 **원인 코드**(예: `KOE010`)가 표시됨. 구글·카카오 서버 호출은 8초 안에 끝나지 않으면 `timeout` 으로 실패 처리 |
+
+- 자주 보이는 코드: `KOE320` 인가 코드 재사용, `KOE010` 클라이언트 시크릿 불일치, `KOE303` Redirect URI 불일치, `KOE101` 앱 키 오류.
+- 서버 로그는 `wrangler.toml` 의 `[observability]` 로 보관되며, Cloudflare 대시보드 Workers → `planbook-admin` → Observability 에서 볼 수 있습니다 (비밀 값은 기록하지 않음).
+
+## 이용약관 · 개인정보처리방침
+
+`terms.html`, `privacy.html` 은 초안입니다. 아래를 **직접 채우고**(노란색으로 표시된 칸), 필요하면 법률 검토를 받으세요.
+
+- 운영자 이름, 이메일 (두 문서의 `[… 입력하세요]` 칸)
+- Google 앱 게시 화면과 Kakao 앱 설정에 두 문서의 주소를 등록 (`https://<사이트 주소>/privacy.html`, `terms.html`)
+- 서비스에서 수집·처리하는 내용이 달라지면(예: 이메일 수집, 새 외부 서비스) 방침도 함께 고치세요.
 
 ## 공유 범위
 
@@ -81,10 +127,13 @@ npx wrangler d1 execute planbook --remote --file=migrations/002_sharing.sql
 
 | 경로 | 설명 |
 | --- | --- |
-| `GET /auth/{google,kakao}/start?return=<사이트 URL>` | 소셜 로그인 시작 |
+| `GET /auth/{google,kakao}/start?return=<사이트 URL>&cc=<검증값 해시>` | 소셜 로그인 시작 |
 | `GET /auth/{google,kakao}/callback` | 제공자가 돌아오는 주소 → 사이트로 `#code=` 와 함께 이동 |
-| `POST /auth/exchange` | 1회용 코드(60초) → 세션 토큰(30일) |
+| `POST /auth/exchange` | 1회용 코드(60초) + 검증값(`cv`) → 세션 토큰(30일) |
 | `POST /auth/logout` | 세션 삭제 |
+| `GET /api/me` · `DELETE /api/me` | 내 계정·연결된 로그인 수단 · 계정 삭제 `{confirm:true}` |
+| `POST /api/link/preview` · `POST /api/link` | 계정 연결 미리보기 · 연결/합치기 `{code, cv, merge?}` |
+| `DELETE /api/identities/:id` | 로그인 수단 해제 (마지막 하나는 불가) |
 | `GET /api/plans` · `POST /api/plans` | 내 플랜북 + 공유받은 플랜북 목록 · 새로 만들기 (최대 50개) |
 | `GET/PUT/DELETE /api/plans/:id` | 읽기 · 저장(`{data, rev}`) · 삭제(소유자). 링크로 접근할 때는 `?s=<토큰>` |
 | `PUT /api/plans/:id/sharing` | 링크 공유 범위 변경 `{access, rotate?}` (소유자) |
