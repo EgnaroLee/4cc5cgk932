@@ -1,6 +1,7 @@
 name = "planbook-admin"
 main = "worker.js"
 compatibility_date = "2026-11-01"
+preview_urls = false   # 미리보기 주소(버전별 임시 주소)는 쓰지 않는다
 
 [vars]
 # 사이트 origin (경로 없이). 저장소 이름을 바꾼 뒤에도 origin은 같다.
